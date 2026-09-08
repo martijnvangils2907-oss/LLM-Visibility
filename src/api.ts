@@ -155,9 +155,14 @@ app.get("/api/estimate", async (c) => {
       estimate += n * costUsd(model, shape.input, shape.output);
     }
   }
+  const batchSize = Math.max(1, parseInt(c.env.DRAIN_BATCH_SIZE, 10) || 12);
   return c.json({
     prompts: total?.n ?? 0,
     distinctPrompts: distinct?.n ?? 0,
+    drainBatchSize: batchSize,
+    // One task is drained per slot per minute, so wall-clock is set by the task
+    // count and the batch size, not by how many API calls dedupe saves.
+    sweepMinutes: Math.ceil(((total?.n ?? 0) * models.length * modes.length) / batchSize),
     dedupe,
     models,
     modes,
@@ -173,7 +178,8 @@ app.post("/api/admin/run", async (c) => {
   const open = await c.env.DB.prepare("SELECT id FROM runs WHERE status = 'running' LIMIT 1").first();
   if (open) return c.json({ error: "a run is already in progress" }, 409);
   const { runId, taskCount } = await startRun(c.env, "manual", `started by ${c.get("email")}`);
-  return c.json({ runId, taskCount });
+  const batchSize = Math.max(1, parseInt(c.env.DRAIN_BATCH_SIZE, 10) || 12);
+  return c.json({ runId, taskCount, etaMinutes: Math.ceil(taskCount / batchSize) });
 });
 
 app.post("/api/admin/abort", async (c) => {

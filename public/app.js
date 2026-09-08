@@ -452,7 +452,13 @@ VIEWS.runs = async (root) => {
         ? `${est.distinctPrompts} distinct questions; identical DE/CH and NL/BE prompts share one call`
         : "deduplication off"),
     tile("Claude calls per sweep", String(est.apiCalls),
-      `${est.models.map((m) => m.replace("claude-", "")).join(", ")} × ${est.modes.join(", ")}`),
+      `${est.models.length * est.modes.length * est.prompts} tasks; ` +
+      `${est.models.length * est.modes.length * est.prompts - est.apiCalls} reuse an answer from an identical prompt`),
+    tile("Time per sweep",
+      est.sweepMinutes >= 60
+        ? `${Math.floor(est.sweepMinutes / 60)}h ${est.sweepMinutes % 60}m`
+        : `${est.sweepMinutes} min`,
+      `${est.drainBatchSize} tasks a minute, unattended. Nothing needs to stay open.`),
     tile("Estimated cost per sweep", `$${num(est.estimateUsd, 2)}`,
       `Budget cap $${num(est.budgetUsd, 0)}. ${est.note}`),
   ));
@@ -471,7 +477,12 @@ VIEWS.runs = async (root) => {
                 method: "POST",
                 headers: { "X-Admin-Token": state.adminToken },
               });
-              alert(`Sweep ${r.runId} started with ${r.taskCount} tasks. It drains over roughly an hour.`);
+              const h = Math.floor(r.etaMinutes / 60), m = r.etaMinutes % 60;
+              alert(
+                `Sweep ${r.runId} started: ${r.taskCount} tasks.\n\n` +
+                `Expect it to finish in about ${h ? `${h}h ${m}m` : `${m} minutes`}. ` +
+                `You can close this tab \u2014 it keeps running.`,
+              );
               switchView("runs");
             } catch (err) { alert(err.message); e.target.disabled = false; }
           },
@@ -530,7 +541,15 @@ VIEWS.runs = async (root) => {
             el("td", { class: "mono" }, r.label),
             el("td", { html: `<span class="pill ${r.status === "complete" ? "recommended" : r.status === "running" ? "grounded" : "qualified"}">${esc(r.status)}</span>` }),
             el("td", {}, r.trigger),
-            el("td", { html: `<div class="progress"><div style="width:${(frac * 100).toFixed(0)}%"></div></div><span style="font-size:11px;color:#64748B">${r.tasksDone} / ${r.tasks}</span>` }),
+            el("td", { html: (() => {
+              const left = Math.max(0, r.tasks - r.tasksDone);
+              const mins = Math.ceil(left / (est.drainBatchSize || 12));
+              const eta = r.status === "running" && left
+                ? ` &middot; ~${mins >= 60 ? `${Math.floor(mins / 60)}h ${mins % 60}m` : `${mins} min`} left`
+                : "";
+              return `<div class="progress"><div style="width:${(frac * 100).toFixed(0)}%"></div></div>` +
+                `<span style="font-size:11px;color:#64748B">${r.tasksDone} / ${r.tasks}${eta}</span>`;
+            })() }),
             el("td", { class: "num" }, `$${num(r.costUsd, 2)}`),
             el("td", {}, new Date(r.startedAt).toLocaleString()),
             el("td", { class: "mono" }, JSON.parse(r.models).map((m) => m.replace("claude-", "")).join(", ")));
