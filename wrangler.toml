@@ -26,7 +26,12 @@ crons = ["0 6 * * 1", "* * * * *"]
 SWEEP_CRON = "0 6 * * 1"
 DRAIN_CRON = "* * * * *"
 # Models swept each run, comma separated.
-SWEEP_MODELS = "claude-sonnet-5,claude-opus-5"
+#
+# Sonnet only, for now. Opus was 72% of the bill and we have no evidence yet
+# that it reports different visibility, which is exactly what the Trend tab
+# would show if it were added back later. A batched Sonnet-only sweep is about
+# $4; adding Opus takes it to about $14.
+SWEEP_MODELS = "claude-sonnet-5"
 # Grounding modes swept each run: "grounded" uses the web_search server tool,
 # "ungrounded" measures the model's own parametric knowledge.
 SWEEP_MODES = "grounded,ungrounded"
@@ -41,8 +46,10 @@ DRAIN_BATCH_SIZE = "12"
 # single knob -- and lowering it makes the answer less researched than a real
 # user's, trading measurement fidelity for money.
 MAX_SEARCHES_PER_ANSWER = "6"
-# Hard ceiling per sweep. The runner aborts remaining tasks past this.
-MAX_RUN_COST_USD = "40"
+# Hard ceiling per sweep, measured against the api_calls ledger so wasted spend
+# counts too. A Sonnet-only batched sweep runs about $4, so this is generous
+# headroom that still stops anything unexpected well short of a full balance.
+MAX_RUN_COST_USD = "10"
 # Skip API calls for prompts whose text is byte-identical to one already
 # answered in the same run/model/mode, and attribute the answer to both.
 DEDUPE_IDENTICAL_PROMPTS = "true"

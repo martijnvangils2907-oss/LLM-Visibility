@@ -6,6 +6,8 @@ import {
 } from "./batch.ts";
 import { detectBrands, loadBrands } from "./brands.ts";
 import { JUDGE_MODEL } from "./claude.ts";
+import { fatalReason } from "./fatal.ts";
+import { abortRun } from "./runner.ts";
 import { costUsd, type Env, type Mode } from "./types.ts";
 
 const nowIso = () => new Date().toISOString();
@@ -32,12 +34,19 @@ export async function advanceBatchRun(env: Env): Promise<string> {
 
   const client = new Anthropic({ apiKey: env.ANTHROPIC_API_KEY, maxRetries: 2 });
 
-  if (!run.batch_id) return submitAnswers(env, client, run.id);
-  if (run.status === "processing") return ingestAnswers(env, client, run.id, run.batch_id);
-  if (run.status === "judging" && run.judge_batch_id) {
-    return ingestStances(env, client, run.id, run.judge_batch_id);
+  try {
+    if (!run.batch_id) return await submitAnswers(env, client, run.id);
+    if (run.status === "processing") return await ingestAnswers(env, client, run.id, run.batch_id);
+    if (run.status === "judging" && run.judge_batch_id) {
+      return await ingestStances(env, client, run.id, run.judge_batch_id);
+    }
+    return `run ${run.id} in an unexpected state (${run.status})`;
+  } catch (err) {
+    const reason = fatalReason(err);
+    if (!reason) throw err;
+    await abortRun(env, run.id, reason);
+    return `run ${run.id} aborted: ${reason}`;
   }
-  return `run ${run.id} in an unexpected state (${run.status})`;
 }
 
 /** One request per distinct question, so identical DE/CH and NL/BE prompts share it. */

@@ -1,6 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { ask, judgeStance, JUDGE_MODEL } from "./claude.ts";
 import { detectBrands, loadBrands } from "./brands.ts";
+import { fatalReason } from "./fatal.ts";
 import { costUsd, type Env, type Mode } from "./types.ts";
 
 const STALE_CLAIM_MS = 10 * 60 * 1000;
@@ -123,6 +124,20 @@ async function recordCall(
   ).run();
 }
 
+/** Stop a run and leave the reason where the dashboard will show it. */
+export async function abortRun(env: Env, runId: number, reason: string): Promise<void> {
+  await env.DB.batch([
+    env.DB.prepare(
+      `UPDATE tasks SET status = 'skipped', error = ?
+       WHERE run_id = ? AND status IN ('pending','running')`,
+    ).bind(reason, runId),
+    env.DB.prepare(
+      "UPDATE runs SET status = 'aborted', finished_at = ?, note = ? WHERE id = ?",
+    ).bind(nowIso(), reason, runId),
+  ]);
+  console.log(`run ${runId} aborted: ${reason}`);
+}
+
 /** Close out any run whose tasks are all resolved. */
 async function finalizeRuns(env: Env): Promise<void> {
   await env.DB.prepare(
@@ -215,6 +230,16 @@ export async function drain(env: Env): Promise<{ claimed: number; done: number; 
     const size = [...groups.values()][i].length;
     if (o.status === "fulfilled") done += size;
     else errors += size;
+  }
+
+  // One unrecoverable failure means every remaining task would fail identically,
+  // so stop the run instead of retrying 1200 of them.
+  for (const o of outcomes) {
+    if (o.status !== "rejected") continue;
+    const reason = fatalReason(o.reason);
+    if (!reason) continue;
+    await abortRun(env, runId, reason);
+    return { claimed: tasks.length, done, errors };
   }
 
   await finalizeRuns(env);
