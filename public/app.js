@@ -27,7 +27,31 @@ const pct = (v, digits = 1) => `${(v * 100).toFixed(digits)}%`;
 const num = (v, digits = 1) => (v === null || v === undefined ? "—" : Number(v).toFixed(digits));
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 
-const state = { view: "overview", facets: null, runs: [], filters: {}, me: null };
+const state = { view: "overview", facets: null, runs: [], filters: {}, me: null, adminToken: "" };
+
+/* The admin token gates starting a sweep. It is kept in this browser rather
+   than in the URL: a query string ends up in history, in bookmarks and in
+   Cloudflare Access logs. Storage can throw in a private window, so every
+   access is guarded and an unavailable store just means asking again. */
+const TOKEN_KEY = "icron-admin-token";
+const loadToken = () => {
+  try { return localStorage.getItem(TOKEN_KEY) || ""; } catch { return ""; }
+};
+const saveToken = (v) => {
+  try { v ? localStorage.setItem(TOKEN_KEY, v) : localStorage.removeItem(TOKEN_KEY); } catch { /* private window */ }
+};
+
+/** Ask the server whether a token is actually valid, rather than assuming. */
+async function checkAdmin(token) {
+  if (!token) return false;
+  try {
+    const res = await fetch("/api/me", { headers: { "X-Admin-Token": token } });
+    if (!res.ok) return false;
+    return (await res.json()).admin === true;
+  } catch {
+    return false;
+  }
+}
 
 /* ------------------------------------------------------------------ fetch */
 async function api(path, opts) {
@@ -433,8 +457,9 @@ VIEWS.runs = async (root) => {
       `Budget cap $${num(est.budgetUsd, 0)}. ${est.note}`),
   ));
 
+  const running = runs.find((r) => r.status === "running");
+
   if (state.me?.admin) {
-    const running = runs.find((r) => r.status === "running");
     root.appendChild(el("div", { class: "card", style: "margin-top:16px" },
       el("div", { class: "row-actions" },
         el("button", {
@@ -442,14 +467,58 @@ VIEWS.runs = async (root) => {
           onclick: async (e) => {
             e.target.disabled = true;
             try {
-              const r = await api("/api/admin/run", { method: "POST", headers: { "X-Admin-Token": state.adminToken || "" } });
+              const r = await api("/api/admin/run", {
+                method: "POST",
+                headers: { "X-Admin-Token": state.adminToken },
+              });
               alert(`Sweep ${r.runId} started with ${r.taskCount} tasks. It drains over roughly an hour.`);
               switchView("runs");
             } catch (err) { alert(err.message); e.target.disabled = false; }
           },
         }, running ? "A sweep is already running" : "Start a sweep now"),
         el("span", { class: "hint", style: "margin:0" },
-          "Sweeps also start automatically every Monday at 06:00 UTC."))));
+          "Sweeps also start automatically every Monday at 06:00 UTC."),
+        el("span", { class: "grow", style: "flex:1" }),
+        el("button", {
+          class: "action ghost",
+          onclick: () => { saveToken(""); state.adminToken = ""; state.me.admin = false; switchView("runs"); },
+        }, "Lock"))));
+  } else {
+    // Read-only by default. The token is the one invented when the
+    // ADMIN_TOKEN repository secret was created; it is not issued by anyone.
+    root.appendChild(el("div", { class: "card", style: "margin-top:16px" },
+      el("h2", {}, "Start a sweep"),
+      el("p", { class: "hint" },
+        "Starting a sweep spends money, so it needs the admin token \u2014 the random " +
+        "string set as the ADMIN_TOKEN secret. It is remembered in this browser only."),
+      el("form", {
+        class: "row-actions",
+        onsubmit: async (ev) => {
+          ev.preventDefault();
+          const input = ev.target.querySelector("input");
+          const status = ev.target.querySelector(".unlock-status");
+          const token = input.value.trim();
+          if (!token) return;
+          status.textContent = "Checking\u2026";
+          status.style.color = "var(--ink-muted)";
+          if (await checkAdmin(token)) {
+            state.adminToken = token;
+            state.me.admin = true;
+            saveToken(token);
+            switchView("runs");
+          } else {
+            status.textContent = "That token does not match. Check for stray spaces, or set a new ADMIN_TOKEN secret and redeploy.";
+            status.style.color = "var(--bad)";
+            input.select();
+          }
+        },
+      },
+        el("input", {
+          type: "password", placeholder: "Admin token", autocomplete: "off",
+          style: "min-width:280px;font:inherit;padding:7px 10px;border:1px solid var(--border);border-radius:6px",
+        }),
+        el("button", { class: "action", type: "submit" }, "Unlock"),
+        el("span", { class: "unlock-status hint", style: "margin:0" }))));
   }
 
   root.appendChild(el("div", { style: "margin-top:16px" },
@@ -510,11 +579,18 @@ async function boot() {
     $("#view").replaceChildren(el("div", { class: "note" }, err.message));
     return;
   }
-  if (state.me.admin === false) {
-    // The dashboard is read-only unless an admin token is supplied by hand.
-    const token = new URLSearchParams(location.search).get("token");
-    if (token) { state.adminToken = token; state.me.admin = true; }
+  // A token in the URL is accepted once, then moved into this browser's storage
+  // and scrubbed from the address bar so it does not linger in history.
+  const fromUrl = new URLSearchParams(location.search).get("token");
+  if (fromUrl) {
+    const url = new URL(location.href);
+    url.searchParams.delete("token");
+    history.replaceState(null, "", url.pathname + url.search + url.hash);
   }
+  state.adminToken = fromUrl || loadToken();
+  state.me.admin = await checkAdmin(state.adminToken);
+  if (state.me.admin) saveToken(state.adminToken);
+  else if (fromUrl) saveToken("");
 
   const [facets, runs] = await Promise.all([api("/api/facets"), api("/api/runs")]);
   state.facets = facets;
