@@ -24,6 +24,14 @@ export default {
   },
 
   async scheduled(event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+    // Heartbeat. Without it there is no way to tell a stuck run from a cron
+    // that is not firing at all, which are entirely different problems.
+    ctx.waitUntil(
+      env.DB.prepare(
+        "INSERT INTO settings (key, value) VALUES ('last_tick', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+      ).bind(new Date().toISOString()).run().then(() => {}, () => {}),
+    );
+
     if (event.cron === env.SWEEP_CRON) {
       const open = await env.DB.prepare(
         "SELECT id FROM runs WHERE status IN ('running','processing','judging') LIMIT 1",

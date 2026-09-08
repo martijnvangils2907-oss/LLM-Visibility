@@ -199,6 +199,78 @@ app.get("/api/spend", async (c) => {
   return c.json({ rows, billed });
 });
 
+/**
+ * Everything needed to diagnose a sweep, as plain text in one request.
+ *
+ * Exists because the person who can see this dashboard and the person who can
+ * read the code are not always the same, and describing a stuck run in prose
+ * loses exactly the details that matter.
+ */
+app.get("/api/diagnostics", async (c) => {
+  const db = c.env.DB;
+  const out: string[] = [];
+  const line = (s = "") => out.push(s);
+
+  line(`ICRON LLM Visibility diagnostics`);
+  line(`generated ${new Date().toISOString()}`);
+  line();
+
+  const tick = await db.prepare("SELECT value FROM settings WHERE key = 'last_tick'").first<{ value: string }>();
+  if (tick) {
+    const ageSec = Math.round((Date.now() - Date.parse(tick.value)) / 1000);
+    line(`CRON      last tick ${tick.value} (${ageSec}s ago)` +
+         (ageSec > 180 ? "   <-- STALE, the per-minute cron is not firing" : "   ok"));
+  } else {
+    line("CRON      never ticked since this was deployed  <-- no scheduled run has completed");
+  }
+
+  line(`CONFIG    engine=${c.env.SWEEP_ENGINE ?? "batch"} models=${c.env.SWEEP_MODELS} ` +
+       `modes=${c.env.SWEEP_MODES} budget=$${c.env.MAX_RUN_COST_USD} ` +
+       `searches=${c.env.MAX_SEARCHES_PER_ANSWER ?? "6"} drain=${c.env.DRAIN_BATCH_SIZE}`);
+  line();
+
+  const { results: runs } = await db.prepare(
+    `SELECT id, label, status, engine, trigger, started_at, finished_at, batch_id,
+            judge_batch_id, batch_progress, note
+     FROM runs ORDER BY started_at DESC LIMIT 8`,
+  ).all<Record<string, unknown>>();
+
+  if (!runs.length) line("RUNS      none");
+  for (const r of runs) {
+    line(`RUN ${r.id}  ${r.label}  status=${r.status}  engine=${r.engine}  trigger=${r.trigger}`);
+    line(`          started ${r.started_at}${r.finished_at ? `  finished ${r.finished_at}` : ""}`);
+    if (r.batch_id) line(`          batch=${r.batch_id}${r.judge_batch_id ? ` judge=${r.judge_batch_id}` : ""}`);
+    if (r.batch_progress) line(`          progress ${r.batch_progress}`);
+    if (r.note) line(`          note: ${r.note}`);
+
+    const { results: byStatus } = await db.prepare(
+      "SELECT status, COUNT(*) AS n FROM tasks WHERE run_id = ? GROUP BY status ORDER BY n DESC",
+    ).bind(r.id).all<{ status: string; n: number }>();
+    line(`          tasks: ${byStatus.map((s) => `${s.status}=${s.n}`).join(" ") || "none"}`);
+
+    const spend = await db.prepare(
+      `SELECT COUNT(*) AS calls, COALESCE(SUM(cost_usd),0) AS total,
+              COALESCE(SUM(CASE WHEN persisted=0 THEN cost_usd ELSE 0 END),0) AS wasted
+       FROM api_calls WHERE run_id = ?`,
+    ).bind(r.id).first<{ calls: number; total: number; wasted: number }>();
+    const stored = await db.prepare("SELECT COUNT(*) AS n FROM results WHERE run_id = ?")
+      .bind(r.id).first<{ n: number }>();
+    line(`          billed calls=${spend?.calls ?? 0} $${(spend?.total ?? 0).toFixed(4)} ` +
+         `wasted $${(spend?.wasted ?? 0).toFixed(4)} | answers stored=${stored?.n ?? 0}`);
+
+    const { results: errs } = await db.prepare(
+      `SELECT COALESCE(error,'(none)') AS error, COUNT(*) AS n FROM tasks
+       WHERE run_id = ? AND error IS NOT NULL GROUP BY error ORDER BY n DESC LIMIT 5`,
+    ).bind(r.id).all<{ error: string; n: number }>();
+    for (const e of errs) line(`          error x${e.n}: ${e.error.slice(0, 200)}`);
+    line();
+  }
+
+  return new Response(out.join("\n"), {
+    headers: { "Content-Type": "text/plain; charset=utf-8" },
+  });
+});
+
 app.post("/api/admin/run", async (c) => {
   if (!isAdmin(c.req.raw, c.env)) return c.json({ error: "admin token required" }, 403);
   // 'processing' and 'judging' are the batch engine's in-flight states. Checking
