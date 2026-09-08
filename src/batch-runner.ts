@@ -132,14 +132,20 @@ async function ingestAnswers(
     if (!lead) continue;
 
     const parsed = parseAnswerMessage(entry.result.message as unknown as Anthropic.Message);
-    // Ledger first: the batch has already been billed by the time we read it.
+
+    // The results stream has no cursor, so an ingest that does not finish inside
+    // one cron tick is replayed from the start by the next one. Anthropic bills
+    // the batch once; recording it once is this guard's job. Without it a replay
+    // inflates the ledger and can trip the budget cap on money never spent.
     await env.DB.prepare(
       `INSERT INTO api_calls
          (run_id, task_id, kind, model, input_tokens, output_tokens, cost_usd, persisted, created_at)
-       VALUES (?,?,'answer',?,?,?,?,0,?)`,
+       SELECT ?,?,'answer',?,?,?,?,0,?
+       WHERE NOT EXISTS (SELECT 1 FROM api_calls WHERE task_id = ? AND kind = 'answer')`,
     ).bind(
       runId, lead.id, lead.model, parsed.inputTokens, parsed.outputTokens,
       costUsd(lead.model, parsed.inputTokens, parsed.outputTokens) * BATCH_DISCOUNT, nowIso(),
+      lead.id,
     ).run();
     if (!parsed.answer) {
       await env.DB.prepare("UPDATE tasks SET status = 'error', error = 'empty answer' WHERE id = ?")
@@ -236,11 +242,14 @@ async function ingestStances(
     if (!stance) continue;
 
     const cost = costUsd(JUDGE_MODEL, stance.inputTokens, stance.outputTokens) * BATCH_DISCOUNT;
+    // Same replay guard, keyed on the result this judged.
     await env.DB.prepare(
       `INSERT INTO api_calls
          (run_id, task_id, kind, model, input_tokens, output_tokens, cost_usd, persisted, created_at)
-       VALUES (?,NULL,'judge',?,?,?,?,1,?)`,
-    ).bind(runId, JUDGE_MODEL, stance.inputTokens, stance.outputTokens, cost, nowIso()).run();
+       SELECT ?,?,'judge',?,?,?,?,1,?
+       WHERE NOT EXISTS (SELECT 1 FROM api_calls WHERE task_id = ? AND kind = 'judge')`,
+    ).bind(runId, parsedId.id, JUDGE_MODEL, stance.inputTokens, stance.outputTokens, cost,
+           nowIso(), parsedId.id).run();
     await env.DB.prepare(
       `UPDATE results SET self_stance = ?, self_evidence = ?, cost_usd = cost_usd + ?
        WHERE id = ? AND run_id = ?`,
