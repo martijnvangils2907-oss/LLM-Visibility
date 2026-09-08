@@ -1,0 +1,43 @@
+name = "icron-llm-visibility"
+main = "src/index.ts"
+compatibility_date = "2025-01-15"
+compatibility_flags = ["nodejs_compat"]
+
+# The dashboard is protected by Cloudflare Access on a custom route.
+# workers_dev is disabled so nobody can bypass Access via the *.workers.dev URL.
+workers_dev = false
+
+[assets]
+directory = "./public"
+binding = "ASSETS"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "icron-visibility"
+database_id = "REPLACE_WITH_YOUR_D1_DATABASE_ID"
+
+[triggers]
+# Monday 06:00 UTC: open a new weekly sweep and enqueue its tasks.
+# Every minute: drain a small batch of pending tasks (keeps us far under the
+# Workers subrequest limit and gives the dashboard live progress).
+crons = ["0 6 * * 1", "* * * * *"]
+
+[vars]
+SWEEP_CRON = "0 6 * * 1"
+DRAIN_CRON = "* * * * *"
+# Models swept each run, comma separated.
+SWEEP_MODELS = "claude-sonnet-5,claude-opus-5"
+# Grounding modes swept each run: "grounded" uses the web_search server tool,
+# "ungrounded" measures the model's own parametric knowledge.
+SWEEP_MODES = "grounded,ungrounded"
+# Tasks claimed per drain tick. Each task is one Claude call.
+DRAIN_BATCH_SIZE = "12"
+# Hard ceiling per sweep. The runner aborts remaining tasks past this.
+MAX_RUN_COST_USD = "40"
+# Skip API calls for prompts whose text is byte-identical to one already
+# answered in the same run/model/mode, and attribute the answer to both.
+DEDUPE_IDENTICAL_PROMPTS = "true"
+# Cloudflare Access verification. Leave TEAM_DOMAIN empty to disable
+# (only safe if the Worker is unreachable except through an Access-protected route).
+ACCESS_TEAM_DOMAIN = ""
+ACCESS_AUD = ""

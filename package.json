@@ -1,0 +1,26 @@
+{
+  "name": "icron-llm-visibility",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Unbranded Claude visibility tracking for ICRON Technologies across DE, UK, NL, BE and CH supply chain topics.",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "typecheck": "tsc --noEmit",
+    "seed:gen": "node scripts/gen-seed.mjs",
+    "db:init:local": "wrangler d1 execute icron-visibility --local --file=./migrations/0001_init.sql && wrangler d1 execute icron-visibility --local --file=./migrations/0002_seed_prompts.sql",
+    "db:init:remote": "wrangler d1 execute icron-visibility --remote --file=./migrations/0001_init.sql && wrangler d1 execute icron-visibility --remote --file=./migrations/0002_seed_prompts.sql",
+    "test": "node --experimental-strip-types test/brands.test.ts"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.124.0",
+    "hono": "^4.6.14",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250109.0",
+    "typescript": "^5.7.2",
+    "wrangler": "^3.99.0"
+  }
+}

@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ICRON LLM Visibility</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <!-- Replace with the ICRON logo SVG (digital = no motto). See README. -->
+    <span class="wordmark">ICRON</span>
+    <span class="subtitle">Claude visibility &middot; supply chain &middot; DE &middot; UK &middot; NL &middot; BE &middot; CH</span>
+    <span class="spacer"></span>
+    <span class="who" id="who"></span>
+  </header>
+
+  <nav class="tabs" id="tabs" role="tablist">
+    <button role="tab" data-view="overview" aria-selected="true">Overview</button>
+    <button role="tab" data-view="markets" aria-selected="false">Markets &amp; topics</button>
+    <button role="tab" data-view="trend" aria-selected="false">Trend</button>
+    <button role="tab" data-view="gaps" aria-selected="false">Gaps</button>
+    <button role="tab" data-view="sources" aria-selected="false">Sources</button>
+    <button role="tab" data-view="prompts" aria-selected="false">Prompts</button>
+    <button role="tab" data-view="runs" aria-selected="false">Runs</button>
+  </nav>
+
+  <main>
+    <section class="filters" id="filters" hidden>
+      <div class="field"><label for="f-run">Run</label><select id="f-run"></select></div>
+      <div class="field"><label for="f-model">Model</label><select id="f-model"></select></div>
+      <div class="field"><label for="f-mode">Grounding</label><select id="f-mode"></select></div>
+      <div class="field"><label for="f-country">Market</label><select id="f-country"></select></div>
+      <div class="field"><label for="f-topic">Topic</label><select id="f-topic"></select></div>
+      <div class="field"><label for="f-intent">Funnel layer</label><select id="f-intent"></select></div>
+      <div class="grow"></div>
+      <button class="action ghost" id="btn-export">Export CSV</button>
+    </section>
+
+    <div id="view"></div>
+  </main>
+
+  <div id="tooltip" role="status" aria-live="polite"></div>
+  <script src="/app.js" type="module"></script>
+</body>
+</html>
