@@ -175,14 +175,22 @@ progress. You can close the tab; the per-minute cron keeps draining.
 ## What it costs
 
 At the shipped configuration (Sonnet 5 + Opus 5, grounded + ungrounded, 195
-distinct prompts) a sweep is about **$27**, so roughly **$1,400 a year** weekly.
-The **Runs** tab shows a live estimate from your actual configuration.
+distinct prompts, submitted as a batch) a sweep is about **$14**, so roughly
+**$710 a year** weekly. The **Runs** tab shows a live estimate from your actual
+configuration, and what the last sweep actually cost.
 
-Grounded Opus is most of it. To cut cost, edit `[vars]` in `wrangler.toml`:
+That already includes the 50% Message Batches discount. Grounded Opus is most of
+what remains. To cut further, edit `[vars]` in `wrangler.toml`:
 
 - `SWEEP_MODELS = "claude-sonnet-5"` — roughly a third of the bill.
 - `SWEEP_MODES = "grounded"` — drops the knowledge-vs-retrieval split.
 - Change the sweep cron to `0 6 1,15 * *` for fortnightly.
+- `MAX_SEARCHES_PER_ANSWER = "3"` — the largest remaining knob, but it makes
+  answers less researched than a real buyer's, so it costs measurement fidelity.
+
+Before dropping a model, check the **Trend** tab: if Opus and Sonnet track each
+other, one of them is a duplicate number you are paying twice for. If they
+diverge, that difference is itself a finding.
 
 `MAX_RUN_COST_USD` is a hard stop: when a run's recorded spend passes it, the
 remaining tasks are skipped and the run is marked aborted. It is a backstop

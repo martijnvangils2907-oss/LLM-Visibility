@@ -9,9 +9,11 @@
     "deploy": "wrangler deploy",
     "typecheck": "tsc --noEmit",
     "seed:gen": "node scripts/gen-seed.mjs",
-    "db:init:local": "wrangler d1 execute icron-visibility --local --file=./migrations/0001_init.sql && wrangler d1 execute icron-visibility --local --file=./migrations/0002_seed_prompts.sql",
-    "db:init:remote": "wrangler d1 execute icron-visibility --remote --file=./migrations/0001_init.sql && wrangler d1 execute icron-visibility --remote --file=./migrations/0002_seed_prompts.sql",
-    "test": "node --experimental-strip-types test/brands.test.ts && node test/cf-setup.test.mjs"
+    "db:init:local": "wrangler d1 execute icron-visibility --local --file=./migrations/0001_init.sql && wrangler d1 execute icron-visibility --local --file=./migrations/0002_seed_prompts.sql && npm run migrate:local",
+    "db:init:remote": "wrangler d1 execute icron-visibility --remote --file=./migrations/0001_init.sql && wrangler d1 execute icron-visibility --remote --file=./migrations/0002_seed_prompts.sql && npm run migrate:remote",
+    "test": "node --experimental-strip-types test/brands.test.ts && node --experimental-strip-types test/batch.test.ts && node test/cf-setup.test.mjs",
+    "migrate:local": "node scripts/migrate.mjs --local",
+    "migrate:remote": "node scripts/migrate.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.124.0",

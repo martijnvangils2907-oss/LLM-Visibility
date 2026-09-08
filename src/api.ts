@@ -1,11 +1,11 @@
 import { Hono } from "hono";
-import { verifyAccess, isAdmin } from "./access";
+import { verifyAccess, isAdmin } from "./access.ts";
 import {
   brandMetrics, breakdown, citationDomains, gaps, runSummary, spendBreakdown, stanceMix, trend,
   type Filters,
-} from "./metrics";
-import { startRun } from "./runner";
-import { costUsd, type Env } from "./types";
+} from "./metrics.ts";
+import { startRun, sweepEngine } from "./runner.ts";
+import { costUsd, type Env } from "./types.ts";
 
 const app = new Hono<{ Bindings: Env; Variables: { email: string } }>();
 
@@ -156,20 +156,27 @@ app.get("/api/estimate", async (c) => {
     }
   }
   const batchSize = Math.max(1, parseInt(c.env.DRAIN_BATCH_SIZE, 10) || 12);
+  const engine = sweepEngine(c.env);
+  const tasks = (total?.n ?? 0) * models.length * modes.length;
   return c.json({
     prompts: total?.n ?? 0,
     distinctPrompts: distinct?.n ?? 0,
+    engine,
     drainBatchSize: batchSize,
-    // One task is drained per slot per minute, so wall-clock is set by the task
-    // count and the batch size, not by how many API calls dedupe saves.
-    sweepMinutes: Math.ceil(((total?.n ?? 0) * models.length * modes.length) / batchSize),
+    // Synchronous sweeps drain a fixed number of tasks a minute. Batched sweeps
+    // are submitted in one go; Anthropic completes most within the hour, with a
+    // 24 hour ceiling, so this is a typical figure rather than a guarantee.
+    sweepMinutes: engine === "batch" ? 60 : Math.ceil(tasks / batchSize),
     dedupe,
     models,
     modes,
     apiCalls: calls,
-    estimateUsd: Math.round(estimate * 100) / 100,
+    estimateUsd: Math.round(estimate * (engine === "batch" ? 0.5 : 1) * 100) / 100,
+    listPriceUsd: Math.round(estimate * 100) / 100,
     budgetUsd: parseFloat(c.env.MAX_RUN_COST_USD),
-    note: "Rough. Grounded answers dominate cost because search results enter the input context.",
+    note: engine === "batch"
+      ? "Rough, and already halved: batched requests bill at 50%. Grounded answers dominate because search results enter the input context."
+      : "Rough. Grounded answers dominate cost because search results enter the input context.",
   });
 });
 
@@ -192,7 +199,10 @@ app.post("/api/admin/run", async (c) => {
   if (open) return c.json({ error: "a run is already in progress" }, 409);
   const { runId, taskCount } = await startRun(c.env, "manual", `started by ${c.get("email")}`);
   const batchSize = Math.max(1, parseInt(c.env.DRAIN_BATCH_SIZE, 10) || 12);
-  return c.json({ runId, taskCount, etaMinutes: Math.ceil(taskCount / batchSize) });
+  return c.json({
+    runId, taskCount, engine: sweepEngine(c.env),
+    etaMinutes: sweepEngine(c.env) === "batch" ? 60 : Math.ceil(taskCount / batchSize),
+  });
 });
 
 app.post("/api/admin/abort", async (c) => {

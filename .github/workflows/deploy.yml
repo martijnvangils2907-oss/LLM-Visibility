@@ -136,6 +136,8 @@ jobs:
           # the seed upserts, so collected results are never touched.
           npx wrangler d1 execute "$DB_NAME" --remote --yes --file=./migrations/0001_init.sql
           npx wrangler d1 execute "$DB_NAME" --remote --yes --file=./migrations/0002_seed_prompts.sql
+          # Columns an existing database cannot get from CREATE TABLE IF NOT EXISTS.
+          node scripts/migrate.mjs
 
       - name: Sync Worker secrets
         if: github.event_name == 'push' || inputs.sync_secrets

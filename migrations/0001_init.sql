@@ -35,8 +35,14 @@ CREATE TABLE IF NOT EXISTS runs (
   modes       TEXT NOT NULL,                  -- JSON array
   started_at  TEXT NOT NULL,
   finished_at TEXT,
-  note        TEXT
+  note        TEXT,
+  -- 'batch' submits the sweep to the Message Batches API at half price;
+  -- 'sync' answers one call at a time.
+  engine         TEXT NOT NULL DEFAULT 'sync',
+  batch_id       TEXT,
+  judge_batch_id TEXT
 );
+CREATE INDEX IF NOT EXISTS idx_runs_status ON runs(status);
 
 -- One row per Claude call we intend to make.
 CREATE TABLE IF NOT EXISTS tasks (

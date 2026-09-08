@@ -1,4 +1,4 @@
-import type { Env } from "./types";
+import type { Env } from "./types.ts";
 
 /**
  * Verify a Cloudflare Access JWT.

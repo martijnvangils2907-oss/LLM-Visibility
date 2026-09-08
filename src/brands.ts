@@ -1,4 +1,4 @@
-import type { Brand, BrandRow } from "./types";
+import type { Brand, BrandRow } from "./types.ts";
 
 export function parseBrand(row: BrandRow): Brand {
   return {

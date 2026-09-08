@@ -1,7 +1,8 @@
-import api from "./api";
-import { drain, startRun } from "./runner";
-import { verifyAccess } from "./access";
-import type { Env } from "./types";
+import api from "./api.ts";
+import { advanceBatchRun } from "./batch-runner.ts";
+import { drain, startRun, sweepEngine } from "./runner.ts";
+import { verifyAccess } from "./access.ts";
+import type { Env } from "./types.ts";
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -33,10 +34,15 @@ export default {
       console.log(`sweep ${runId} opened with ${taskCount} tasks`);
       return;
     }
+    // Both engines are advanced every tick: a batch run may be in flight while
+    // an older synchronous run is still draining.
     ctx.waitUntil(
-      drain(env).then((r) =>
-        console.log(`drain claimed=${r.claimed} done=${r.done} errors=${r.errors}`),
-      ),
+      Promise.allSettled([
+        advanceBatchRun(env).then((m) => console.log(m)),
+        drain(env).then((r) =>
+          console.log(`drain claimed=${r.claimed} done=${r.done} errors=${r.errors}`),
+        ),
+      ]),
     );
   },
 };

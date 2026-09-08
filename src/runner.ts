@@ -1,7 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
-import { ask, judgeStance, JUDGE_MODEL } from "./claude";
-import { detectBrands, loadBrands } from "./brands";
-import { costUsd, type Env, type Mode } from "./types";
+import { ask, judgeStance, JUDGE_MODEL } from "./claude.ts";
+import { detectBrands, loadBrands } from "./brands.ts";
+import { costUsd, type Env, type Mode } from "./types.ts";
 
 const STALE_CLAIM_MS = 10 * 60 * 1000;
 const MAX_ATTEMPTS = 3;
@@ -25,6 +25,8 @@ export interface TaskRow {
  * Tasks are ordered by prompt text so that byte-identical prompts from
  * different countries land in the same drain batch and share one API call.
  */
+export const sweepEngine = (env: Env) => (env.SWEEP_ENGINE === "sync" ? "sync" : "batch");
+
 export async function startRun(
   env: Env,
   trigger: "cron" | "manual",
@@ -36,10 +38,11 @@ export async function startRun(
 
   const label = new Date().toISOString().slice(0, 10);
   const run = await env.DB.prepare(
-    `INSERT INTO runs (label, trigger, status, models, modes, started_at, note)
-     VALUES (?, ?, 'running', ?, ?, ?, ?) RETURNING id`,
+    `INSERT INTO runs (label, trigger, status, models, modes, started_at, note, engine)
+     VALUES (?, ?, 'running', ?, ?, ?, ?, ?) RETURNING id`,
   )
-    .bind(label, trigger, JSON.stringify(models), JSON.stringify(modes), nowIso(), note ?? null)
+    .bind(label, trigger, JSON.stringify(models), JSON.stringify(modes), nowIso(), note ?? null,
+          sweepEngine(env))
     .first<{ id: number }>();
   if (!run) throw new Error("could not create run");
 
@@ -68,11 +71,13 @@ async function reclaimStale(env: Env): Promise<void> {
   await env.DB.batch([
     env.DB.prepare(
       `UPDATE tasks SET status = 'error', error = 'exceeded max attempts'
-       WHERE status = 'running' AND claimed_at < ? AND attempts >= ?`,
+       WHERE status = 'running' AND claimed_at < ? AND attempts >= ?
+         AND run_id IN (SELECT id FROM runs WHERE engine = 'sync')`,
     ).bind(cutoff, MAX_ATTEMPTS),
     env.DB.prepare(
       `UPDATE tasks SET status = 'pending', claimed_at = NULL
-       WHERE status = 'running' AND claimed_at < ? AND attempts < ?`,
+       WHERE status = 'running' AND claimed_at < ? AND attempts < ?
+         AND run_id IN (SELECT id FROM runs WHERE engine = 'sync')`,
     ).bind(cutoff, MAX_ATTEMPTS),
   ]);
 }
@@ -90,7 +95,7 @@ async function runSpendUsd(env: Env, runId: number): Promise<number> {
 async function finalizeRuns(env: Env): Promise<void> {
   await env.DB.prepare(
     `UPDATE runs SET status = 'complete', finished_at = ?
-     WHERE status = 'running'
+     WHERE status = 'running' AND engine = 'sync'
        AND NOT EXISTS (
          SELECT 1 FROM tasks WHERE tasks.run_id = runs.id AND tasks.status IN ('pending','running')
        )`,
@@ -112,7 +117,10 @@ export async function drain(env: Env): Promise<{ claimed: number; done: number; 
   const batchSize = Math.max(1, parseInt(env.DRAIN_BATCH_SIZE, 10) || 12);
   const { results: claimed } = await env.DB.prepare(
     `UPDATE tasks SET status = 'running', claimed_at = ?, attempts = attempts + 1
-     WHERE id IN (SELECT id FROM tasks WHERE status = 'pending' ORDER BY id LIMIT ?)
+     WHERE id IN (
+       SELECT t.id FROM tasks t JOIN runs r ON r.id = t.run_id
+       WHERE t.status = 'pending' AND r.engine = 'sync' ORDER BY t.id LIMIT ?
+     )
      RETURNING id, run_id, prompt_id, model, mode, attempts`,
   )
     .bind(nowIso(), batchSize)

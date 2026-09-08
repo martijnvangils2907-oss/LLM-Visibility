@@ -30,8 +30,17 @@ SWEEP_MODELS = "claude-sonnet-5,claude-opus-5"
 # Grounding modes swept each run: "grounded" uses the web_search server tool,
 # "ungrounded" measures the model's own parametric knowledge.
 SWEEP_MODES = "grounded,ungrounded"
-# Tasks claimed per drain tick. Each task is one Claude call.
+# "batch" submits the sweep to the Message Batches API, which bills the same
+# requests at half price and usually finishes within the hour. "sync" answers
+# one call at a time, draining DRAIN_BATCH_SIZE tasks a minute.
+SWEEP_ENGINE = "batch"
+# Tasks claimed per drain tick, for the sync engine only.
 DRAIN_BATCH_SIZE = "12"
+# Web searches allowed per grounded answer. Search results enter the input
+# context and are most of what a grounded answer costs, so this is the biggest
+# single knob -- and lowering it makes the answer less researched than a real
+# user's, trading measurement fidelity for money.
+MAX_SEARCHES_PER_ANSWER = "6"
 # Hard ceiling per sweep. The runner aborts remaining tasks past this.
 MAX_RUN_COST_USD = "40"
 # Skip API calls for prompts whose text is byte-identical to one already

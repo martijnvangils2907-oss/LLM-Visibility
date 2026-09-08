@@ -11,6 +11,8 @@ export interface Env {
   MAX_RUN_COST_USD: string;
   DEDUPE_IDENTICAL_PROMPTS: string;
   MAX_SEARCHES_PER_ANSWER?: string;
+  /** "batch" bills at half price; "sync" answers one call at a time. */
+  SWEEP_ENGINE?: string;
   ACCESS_TEAM_DOMAIN: string;
   ACCESS_AUD: string;
 }

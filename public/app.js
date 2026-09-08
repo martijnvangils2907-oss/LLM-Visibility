@@ -460,8 +460,11 @@ VIEWS.runs = async (root) => {
       est.sweepMinutes >= 60
         ? `${Math.floor(est.sweepMinutes / 60)}h ${est.sweepMinutes % 60}m`
         : `${est.sweepMinutes} min`,
-      `${est.drainBatchSize} tasks a minute, unattended. Nothing needs to stay open.`),
+      est.engine === "batch"
+        ? "Typical for a batch; the ceiling is 24 hours. Unattended either way."
+        : `${est.drainBatchSize} tasks a minute, unattended. Nothing needs to stay open.`),
     tile("Estimated cost per sweep", `$${num(est.estimateUsd, 2)}`,
+      (est.engine === "batch" ? `Was $${num(est.listPriceUsd, 2)} at list price. ` : "") +
       `Budget cap $${num(est.budgetUsd, 0)}. ${est.note}`),
   ));
 
@@ -480,10 +483,14 @@ VIEWS.runs = async (root) => {
                 headers: { "X-Admin-Token": state.adminToken },
               });
               const h = Math.floor(r.etaMinutes / 60), m = r.etaMinutes % 60;
+              const when = h ? `${h}h ${m}m` : `${m} minutes`;
               alert(
                 `Sweep ${r.runId} started: ${r.taskCount} tasks.\n\n` +
-                `Expect it to finish in about ${h ? `${h}h ${m}m` : `${m} minutes`}. ` +
-                `You can close this tab \u2014 it keeps running.`,
+                (r.engine === "batch"
+                  ? `Submitted to the Message Batches API, which bills at half price. ` +
+                    `Most batches finish within about ${when}; the hard ceiling is 24 hours.`
+                  : `Expect it to finish in about ${when}.`) +
+                `\n\nYou can close this tab \u2014 it keeps running.`,
               );
               switchView("runs");
             } catch (err) { alert(err.message); e.target.disabled = false; }

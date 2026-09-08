@@ -1,7 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { z } from "zod";
 import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
-import type { Citation, Mode } from "./types";
+import type { Citation, Mode } from "./types.ts";
 
 /**
  * Model used to judge how ICRON was talked about. Only runs when an answer

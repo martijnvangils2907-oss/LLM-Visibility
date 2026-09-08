@@ -21,6 +21,30 @@ then scanned for the tracked vendors.
 | **Stance** | recommended / listed / qualified / negative, judged per mention. | A mention is not automatically a win. |
 | **Sources** | Domains Claude read while answering, split by whether the answer named us. | Turns a score into a content brief. |
 
+### Sweeps run as one batch
+
+A sweep submits its calls to the Message Batches API, which bills identical
+requests at half price. Web search is supported there, so nothing about the
+measurement changes: same models, same prompts, same searches, half the money.
+About $14 a sweep rather than $28.
+
+The lifecycle is advanced one step per cron tick:
+
+```
+running -> submit    -> processing
+        -> ended     -> ingest answers -> judging
+        -> ended     -> ingest stances -> complete
+```
+
+The stance judge needs the answers before it can classify them, so it goes out
+as a second batch. Ingestion is idempotent -- results carry a unique index on
+(run, prompt, model, mode) and every insert is `ON CONFLICT DO NOTHING` -- so a
+tick that dies part-way is simply repeated by the next one.
+
+Set `SWEEP_ENGINE = "sync"` to go back to answering one call at a time, which
+costs twice as much and takes about 100 minutes. Runs already in flight keep the
+engine they started with, so switching never disturbs a sweep in progress.
+
 ### Two grounding modes, run side by side
 
 Each prompt is asked twice per model:
@@ -60,7 +84,11 @@ scripts/gen-seed.mjs      Regenerates the seed SQL from that CSV.
 migrations/               Schema, then generated prompt + brand seed.
 src/index.ts              Worker entry: HTTP and the two cron triggers.
 src/runner.ts             Opens sweeps, drains the task queue, writes results.
-src/claude.ts             The Claude calls, incl. pause_turn resume and the judge.
+src/claude.ts             Synchronous Claude calls, incl. pause_turn resume.
+src/batch.ts              Batch request building and result parsing (pure).
+src/batch-runner.ts       The submit / poll / ingest lifecycle.
+scripts/migrate.mjs       Adds columns an existing database cannot get from
+                          CREATE TABLE IF NOT EXISTS.
 src/brands.ts             Alias matching and first-appearance ranking.
 src/metrics.ts            All aggregation SQL.
 src/access.ts             Cloudflare Access JWT verification.
@@ -104,10 +132,11 @@ you can re-score history by re-running detection over the `results` table.
 npm install
 npx wrangler d1 execute icron-visibility --local --file=./migrations/0001_init.sql
 npx wrangler d1 execute icron-visibility --local --file=./migrations/0002_seed_prompts.sql
+npm run migrate:local
 echo "ANTHROPIC_API_KEY=sk-ant-..." > .dev.vars
 echo "ADMIN_TOKEN=local-dev-admin" >> .dev.vars
 npm run dev          # http://localhost:8788
-npm test             # brand detection
+npm test             # brand detection, batch handling, Cloudflare setup
 npm run typecheck
 ```
 
