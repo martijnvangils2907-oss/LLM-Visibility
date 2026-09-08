@@ -64,7 +64,14 @@ Settings → Environments.
 
 ### 4. Later changes
 
-Pushing to `main` redeploys. Everything else runs from the Actions tab.
+Re-run the workflow from the Actions tab. The `push` trigger is set to `main`,
+which does not exist yet: this repository was created empty, so GitHub made the
+`claude/...` branch the default. That is what makes the Run workflow button
+appear at all, since `workflow_dispatch` is only offered for workflows on the
+default branch.
+
+Once you are happy with it, Settings -> Branches -> rename the default branch to
+`main`. Pushes then redeploy automatically.
 
 ---
 
