@@ -69,6 +69,15 @@ export async function startRun(
 async function reclaimStale(env: Env): Promise<void> {
   const cutoff = new Date(Date.now() - STALE_CLAIM_MS).toISOString();
   await env.DB.batch([
+    // Already billed: re-asking would pay for the same answer twice, so give up
+    // on it instead. A slow call that is still in flight lands here too, which
+    // is the right trade -- one missing answer costs nothing, a duplicate does.
+    env.DB.prepare(
+      `UPDATE tasks SET status = 'error', error = 'abandoned after billing; not retried'
+       WHERE status = 'running' AND claimed_at < ?
+         AND EXISTS (SELECT 1 FROM api_calls c WHERE c.task_id = tasks.id)
+         AND run_id IN (SELECT id FROM runs WHERE engine = 'sync')`,
+    ).bind(cutoff),
     env.DB.prepare(
       `UPDATE tasks SET status = 'error', error = 'exceeded max attempts'
        WHERE status = 'running' AND claimed_at < ? AND attempts >= ?
@@ -82,13 +91,36 @@ async function reclaimStale(env: Env): Promise<void> {
   ]);
 }
 
+/**
+ * What this run has actually been billed, including calls whose answers were
+ * never stored. Reading this from `results` undercounted every wasted call,
+ * which let the budget cap be passed without noticing.
+ */
 async function runSpendUsd(env: Env, runId: number): Promise<number> {
   const row = await env.DB.prepare(
-    "SELECT COALESCE(SUM(cost_usd), 0) AS spent FROM results WHERE run_id = ?",
+    "SELECT COALESCE(SUM(cost_usd), 0) AS spent FROM api_calls WHERE run_id = ?",
   )
     .bind(runId)
     .first<{ spent: number }>();
   return row?.spent ?? 0;
+}
+
+/** Record a billed call the moment it returns, before anything that can fail. */
+async function recordCall(
+  env: Env,
+  call: {
+    runId: number; taskId: number | null; kind: "answer" | "judge"; model: string;
+    inputTokens: number; outputTokens: number; costUsd: number;
+  },
+): Promise<void> {
+  await env.DB.prepare(
+    `INSERT INTO api_calls
+       (run_id, task_id, kind, model, input_tokens, output_tokens, cost_usd, persisted, created_at)
+     VALUES (?,?,?,?,?,?,?,0,?)`,
+  ).bind(
+    call.runId, call.taskId, call.kind, call.model,
+    call.inputTokens, call.outputTokens, call.costUsd, nowIso(),
+  ).run();
 }
 
 /** Close out any run whose tasks are all resolved. */
@@ -222,6 +254,13 @@ async function handleGroup(
     const res = await ask(client, lead.model, lead.mode, lead.prompt_native, {
       maxSearches: parseInt(env.MAX_SEARCHES_PER_ANSWER ?? "", 10) || undefined,
     });
+    // Billed the moment this returns, so it is recorded before anything below
+    // can fail and strand the money.
+    await recordCall(env, {
+      runId: lead.run_id, taskId: lead.id, kind: "answer", model: lead.model,
+      inputTokens: res.inputTokens, outputTokens: res.outputTokens,
+      costUsd: costUsd(lead.model, res.inputTokens, res.outputTokens),
+    });
     if (!res.answer) throw new Error(`empty answer (stop_reason=${res.stopReason})`);
 
     const hits = detectBrands(res.answer, brands);
@@ -232,7 +271,14 @@ async function handleGroup(
     let stance: Awaited<ReturnType<typeof judgeStance>> = null;
     if (selfHit) {
       stance = await judgeStance(client, res.answer);
-      if (stance) cost += costUsd(JUDGE_MODEL, stance.inputTokens, stance.outputTokens);
+      if (stance) {
+        cost += costUsd(JUDGE_MODEL, stance.inputTokens, stance.outputTokens);
+        await recordCall(env, {
+          runId: lead.run_id, taskId: null, kind: "judge", model: JUDGE_MODEL,
+          inputTokens: stance.inputTokens, outputTokens: stance.outputTokens,
+          costUsd: costUsd(JUDGE_MODEL, stance.inputTokens, stance.outputTokens),
+        });
+      }
     }
 
     let leadResultId: number | null = null;
@@ -276,15 +322,28 @@ async function handleGroup(
         .bind(t.id)
         .run();
     }
+    await env.DB.prepare("UPDATE api_calls SET persisted = 1 WHERE task_id = ?")
+      .bind(lead.id).run();
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
+
+    // If the answer was already billed, retrying pays for it a second time and
+    // usually fails the same way. Only failures before the API call are retried.
+    const billed = await env.DB.prepare(
+      "SELECT 1 AS x FROM api_calls WHERE task_id = ? LIMIT 1",
+    ).bind(lead.id).first<{ x: number }>();
+
     await env.DB.batch(
       group.map((t) =>
         env.DB.prepare(
-          `UPDATE tasks SET status = CASE WHEN attempts >= ? THEN 'error' ELSE 'pending' END,
-                            claimed_at = NULL, error = ?
-           WHERE id = ?`,
-        ).bind(MAX_ATTEMPTS, message.slice(0, 500), t.id),
+          billed
+            ? `UPDATE tasks SET status = 'error', claimed_at = NULL, error = ? WHERE id = ?`
+            : `UPDATE tasks SET status = CASE WHEN attempts >= ${MAX_ATTEMPTS} THEN 'error' ELSE 'pending' END,
+                                 claimed_at = NULL, error = ? WHERE id = ?`,
+        ).bind(
+          billed ? `billed but not stored: ${message.slice(0, 460)}` : message.slice(0, 500),
+          t.id,
+        ),
       ),
     );
     throw err;

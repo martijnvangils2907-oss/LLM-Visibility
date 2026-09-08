@@ -14,6 +14,16 @@ import { execFileSync } from "node:child_process";
 const DB = "icron-visibility";
 const scope = process.argv.includes("--local") ? "--local" : "--remote";
 
+/** Tables that must exist even on a database created before they were added. */
+const REQUIRED_TABLES = {
+  api_calls: `CREATE TABLE IF NOT EXISTS api_calls (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, run_id INTEGER NOT NULL, task_id INTEGER,
+    kind TEXT NOT NULL, model TEXT NOT NULL,
+    input_tokens INTEGER NOT NULL DEFAULT 0, output_tokens INTEGER NOT NULL DEFAULT 0,
+    cost_usd REAL NOT NULL DEFAULT 0, persisted INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL)`,
+};
+
 /** Columns every table must have, beyond what 0001_init.sql creates. */
 const REQUIRED = {
   runs: [
@@ -33,6 +43,12 @@ function d1(sql) {
   const start = out.indexOf("[");
   if (start === -1) throw new Error(`Unexpected wrangler output:\n${out}`);
   return JSON.parse(out.slice(start));
+}
+
+for (const [name, ddl] of Object.entries(REQUIRED_TABLES)) {
+  d1(ddl.replace(/\s+/g, " "));
+  d1(`CREATE INDEX IF NOT EXISTS idx_${name}_run ON ${name}(run_id)`);
+  console.log(`${name}: ensured`);
 }
 
 let added = 0;

@@ -1,7 +1,8 @@
 import { Hono } from "hono";
 import { verifyAccess, isAdmin } from "./access.ts";
 import {
-  brandMetrics, breakdown, citationDomains, gaps, runSummary, spendBreakdown, stanceMix, trend,
+  billedSpend, brandMetrics, breakdown, citationDomains, gaps, runSummary, spendBreakdown,
+  stanceMix, trend,
   type Filters,
 } from "./metrics.ts";
 import { startRun, sweepEngine } from "./runner.ts";
@@ -189,8 +190,12 @@ app.get("/api/spend", async (c) => {
     ).first<{ id: number }>();
     runId = latest?.id ?? 0;
   }
-  if (!runId) return c.json([]);
-  return c.json(await spendBreakdown(c.env.DB, runId));
+  if (!runId) return c.json({ rows: [], billed: null });
+  const [rows, billed] = await Promise.all([
+    spendBreakdown(c.env.DB, runId),
+    billedSpend(c.env.DB, runId),
+  ]);
+  return c.json({ rows, billed });
 });
 
 app.post("/api/admin/run", async (c) => {

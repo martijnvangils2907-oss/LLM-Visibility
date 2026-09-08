@@ -311,3 +311,23 @@ export async function spendBreakdown(db: D1Database, runId: number) {
     costPerCall: r.billedCalls ? r.costUsd / r.billedCalls : 0,
   }));
 }
+
+
+/**
+ * True spend for a run, from the billing ledger rather than from stored answers.
+ * `wastedUsd` is money Anthropic charged for calls whose answers were never
+ * kept -- the number that has to stay at zero.
+ */
+export async function billedSpend(db: D1Database, runId: number) {
+  const row = await db
+    .prepare(
+      `SELECT COALESCE(SUM(cost_usd), 0) AS totalUsd,
+              COALESCE(SUM(CASE WHEN persisted = 0 THEN cost_usd ELSE 0 END), 0) AS wastedUsd,
+              COUNT(*) AS calls,
+              SUM(CASE WHEN persisted = 0 THEN 1 ELSE 0 END) AS wastedCalls
+       FROM api_calls WHERE run_id = ?`,
+    )
+    .bind(runId)
+    .first<{ totalUsd: number; wastedUsd: number; calls: number; wastedCalls: number }>();
+  return row ?? { totalUsd: 0, wastedUsd: 0, calls: 0, wastedCalls: 0 };
+}

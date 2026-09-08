@@ -113,6 +113,15 @@ async function ingestAnswers(
     if (!lead) continue;
 
     const parsed = parseAnswerMessage(entry.result.message as unknown as Anthropic.Message);
+    // Ledger first: the batch has already been billed by the time we read it.
+    await env.DB.prepare(
+      `INSERT INTO api_calls
+         (run_id, task_id, kind, model, input_tokens, output_tokens, cost_usd, persisted, created_at)
+       VALUES (?,?,'answer',?,?,?,?,0,?)`,
+    ).bind(
+      runId, lead.id, lead.model, parsed.inputTokens, parsed.outputTokens,
+      costUsd(lead.model, parsed.inputTokens, parsed.outputTokens) * BATCH_DISCOUNT, nowIso(),
+    ).run();
     if (!parsed.answer) {
       await env.DB.prepare("UPDATE tasks SET status = 'error', error = 'empty answer' WHERE id = ?")
         .bind(lead.id).run();
@@ -163,6 +172,8 @@ async function ingestAnswers(
         .bind(member.id).run();
       ingested++;
     }
+    await env.DB.prepare("UPDATE api_calls SET persisted = 1 WHERE task_id = ?")
+      .bind(lead.id).run();
   }
 
   await submitJudges(env, client, runId);
@@ -203,6 +214,11 @@ async function ingestStances(
     if (!stance) continue;
 
     const cost = costUsd(JUDGE_MODEL, stance.inputTokens, stance.outputTokens) * BATCH_DISCOUNT;
+    await env.DB.prepare(
+      `INSERT INTO api_calls
+         (run_id, task_id, kind, model, input_tokens, output_tokens, cost_usd, persisted, created_at)
+       VALUES (?,NULL,'judge',?,?,?,?,1,?)`,
+    ).bind(runId, JUDGE_MODEL, stance.inputTokens, stance.outputTokens, cost, nowIso()).run();
     await env.DB.prepare(
       `UPDATE results SET self_stance = ?, self_evidence = ?, cost_usd = cost_usd + ?
        WHERE id = ? AND run_id = ?`,

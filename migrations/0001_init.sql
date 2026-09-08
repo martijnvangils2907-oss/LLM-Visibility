@@ -102,3 +102,25 @@ CREATE TABLE IF NOT EXISTS settings (
 -- Lets the runner cheaply find an answer already produced for a byte-identical
 -- prompt in another country (DE/CH share German text, NL/BE share Dutch).
 CREATE INDEX IF NOT EXISTS idx_prompts_native ON prompts(prompt_native);
+
+-- Ledger of every billed API call, written the moment the call returns.
+--
+-- Spend used to be inferred from `results`, which only records answers that
+-- were stored successfully. A call that succeeded but whose result failed to
+-- persist was billed by Anthropic and invisible here, so the budget cap
+-- undercounted and the task was re-asked and billed again. This table is the
+-- truth about money; `results` is the truth about measurement.
+CREATE TABLE IF NOT EXISTS api_calls (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id        INTEGER NOT NULL,
+  task_id       INTEGER,          -- null for judge calls, which are per result
+  kind          TEXT NOT NULL,    -- answer | judge
+  model         TEXT NOT NULL,
+  input_tokens  INTEGER NOT NULL DEFAULT 0,
+  output_tokens INTEGER NOT NULL DEFAULT 0,
+  cost_usd      REAL    NOT NULL DEFAULT 0,
+  persisted     INTEGER NOT NULL DEFAULT 0,  -- 0 = paid for but no answer kept
+  created_at    TEXT    NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_api_calls_run  ON api_calls(run_id);
+CREATE INDEX IF NOT EXISTS idx_api_calls_task ON api_calls(task_id);

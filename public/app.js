@@ -443,9 +443,11 @@ VIEWS.promptDetail = async (root, id) => {
 };
 
 VIEWS.runs = async (root) => {
-  const [runs, est, spend] = await Promise.all([
+  const [runs, est, spendData] = await Promise.all([
     api("/api/runs"), api("/api/estimate"), api("/api/spend"),
   ]);
+  const spend = spendData.rows ?? [];
+  const billed = spendData.billed;
   state.runs = runs;
 
   root.appendChild(el("div", { class: "grid cols-3" },
@@ -570,8 +572,14 @@ VIEWS.runs = async (root) => {
                 el("td", { class: "num" }, `$${num(r.costUsd, 2)}`),
                 el("td", { class: "num" }, pct(r.share, 0)))))),
         el("p", { class: "hint", style: "margin-top:12px" },
-          `Total $${num(totalCost, 2)}. The Message Batches API bills the same requests at ` +
-          `half price, so this sweep would be $${num(totalCost / 2, 2)} submitted as a batch.`))));
+          `Total $${num(totalCost, 2)} across ${billed?.calls ?? 0} billed calls.` +
+          (est.engine === "batch" ? " Already at the batched half price." : "")),
+        billed && billed.wastedUsd > 0.005
+          ? el("div", { class: "note", style: "margin-top:12px" },
+              `$${num(billed.wastedUsd, 2)} of that was billed for ${billed.wastedCalls} ` +
+              `call(s) whose answers were never stored. That is pure waste and should be zero ` +
+              `\u2014 tell Claude if it persists.`)
+          : null)));
   }
 
   root.appendChild(el("div", { style: "margin-top:16px" },
