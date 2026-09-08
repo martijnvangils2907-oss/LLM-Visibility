@@ -3,8 +3,14 @@ import { z } from "zod";
 import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
 import type { Citation, Mode } from "./types";
 
-/** Model used to judge how ICRON was talked about. Cheap, only runs on a hit. */
-export const JUDGE_MODEL = "claude-sonnet-5";
+/**
+ * Model used to judge how ICRON was talked about. Only runs when an answer
+ * actually names us, and the task is a four-way classification against written
+ * definitions, so the cheapest current model is the right tool.
+ *
+ * Note: Haiku 4.5 rejects `output_config.effort`, so the judge must not send it.
+ */
+export const JUDGE_MODEL = "claude-haiku-4-5";
 
 export interface AskResult {
   answer: string;
@@ -25,10 +31,18 @@ export async function ask(
   model: string,
   mode: Mode,
   prompt: string,
+  opts: { maxSearches?: number } = {},
 ): Promise<AskResult> {
+  // Search results land in the input context, so this is the single biggest
+  // lever on grounded cost. Lowering it also makes the answer less researched
+  // than a real user's, so it trades measurement fidelity for money.
   const tools =
     mode === "grounded"
-      ? [{ type: "web_search_20260209" as const, name: "web_search" as const, max_uses: 6 }]
+      ? [{
+          type: "web_search_20260209" as const,
+          name: "web_search" as const,
+          max_uses: opts.maxSearches ?? 6,
+        }]
       : undefined;
 
   const messages: Anthropic.MessageParam[] = [{ role: "user", content: prompt }];
@@ -111,10 +125,8 @@ export async function judgeStance(
     const res = await client.messages.parse({
       model: JUDGE_MODEL,
       max_tokens: 500,
-      output_config: {
-        effort: "low",
-        format: zodOutputFormat(StanceSchema),
-      },
+      // No `effort` here: Haiku 4.5 returns a 400 for it.
+      output_config: { format: zodOutputFormat(StanceSchema) },
       messages: [
         {
           role: "user",

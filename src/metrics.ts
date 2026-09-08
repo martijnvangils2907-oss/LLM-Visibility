@@ -274,3 +274,40 @@ export async function runSummary(db: D1Database, runId: number) {
     .first();
   return { run, progress: progress.results, spend };
 }
+
+
+/**
+ * Measured spend for a run, split by model and grounding mode.
+ *
+ * The Runs tab's per-sweep estimate is modelled from assumed token shapes; this
+ * is what was actually billed, and it is the only sound basis for deciding
+ * which model or mode is worth its cost.
+ */
+export async function spendBreakdown(db: D1Database, runId: number) {
+  const { results } = await db
+    .prepare(
+      `SELECT model, mode,
+              COUNT(*) AS answers,
+              SUM(CASE WHEN shared_from IS NULL THEN 1 ELSE 0 END) AS billedCalls,
+              COALESCE(SUM(input_tokens), 0) AS inputTokens,
+              COALESCE(SUM(output_tokens), 0) AS outputTokens,
+              COALESCE(SUM(cost_usd), 0) AS costUsd
+       FROM results WHERE run_id = ?
+       GROUP BY model, mode ORDER BY costUsd DESC`,
+    )
+    .bind(runId)
+    .all<{
+      model: string; mode: string; answers: number; billedCalls: number;
+      inputTokens: number; outputTokens: number; costUsd: number;
+    }>();
+
+  const total = results.reduce((s, r) => s + r.costUsd, 0);
+  return results.map((r) => ({
+    ...r,
+    share: total ? r.costUsd / total : 0,
+    // Per billed call, so a row is comparable regardless of dedup savings.
+    avgInputTokens: r.billedCalls ? Math.round(r.inputTokens / r.billedCalls) : 0,
+    avgOutputTokens: r.billedCalls ? Math.round(r.outputTokens / r.billedCalls) : 0,
+    costPerCall: r.billedCalls ? r.costUsd / r.billedCalls : 0,
+  }));
+}

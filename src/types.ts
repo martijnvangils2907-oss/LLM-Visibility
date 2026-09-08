@@ -10,6 +10,7 @@ export interface Env {
   DRAIN_BATCH_SIZE: string;
   MAX_RUN_COST_USD: string;
   DEDUPE_IDENTICAL_PROMPTS: string;
+  MAX_SEARCHES_PER_ANSWER?: string;
   ACCESS_TEAM_DOMAIN: string;
   ACCESS_AUD: string;
 }

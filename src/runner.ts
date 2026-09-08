@@ -211,7 +211,9 @@ async function handleGroup(
       }
     }
 
-    const res = await ask(client, lead.model, lead.mode, lead.prompt_native);
+    const res = await ask(client, lead.model, lead.mode, lead.prompt_native, {
+      maxSearches: parseInt(env.MAX_SEARCHES_PER_ANSWER ?? "", 10) || undefined,
+    });
     if (!res.answer) throw new Error(`empty answer (stop_reason=${res.stopReason})`);
 
     const hits = detectBrands(res.answer, brands);

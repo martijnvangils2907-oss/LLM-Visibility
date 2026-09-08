@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { verifyAccess, isAdmin } from "./access";
 import {
-  brandMetrics, breakdown, citationDomains, gaps, runSummary, stanceMix, trend,
+  brandMetrics, breakdown, citationDomains, gaps, runSummary, spendBreakdown, stanceMix, trend,
   type Filters,
 } from "./metrics";
 import { startRun } from "./runner";
@@ -171,6 +171,19 @@ app.get("/api/estimate", async (c) => {
     budgetUsd: parseFloat(c.env.MAX_RUN_COST_USD),
     note: "Rough. Grounded answers dominate cost because search results enter the input context.",
   });
+});
+
+/** What a run actually cost, by model and grounding mode. */
+app.get("/api/spend", async (c) => {
+  let runId = Number(new URL(c.req.url).searchParams.get("run")) || 0;
+  if (!runId) {
+    const latest = await c.env.DB.prepare(
+      "SELECT id FROM runs ORDER BY started_at DESC LIMIT 1",
+    ).first<{ id: number }>();
+    runId = latest?.id ?? 0;
+  }
+  if (!runId) return c.json([]);
+  return c.json(await spendBreakdown(c.env.DB, runId));
 });
 
 app.post("/api/admin/run", async (c) => {

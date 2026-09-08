@@ -443,7 +443,9 @@ VIEWS.promptDetail = async (root, id) => {
 };
 
 VIEWS.runs = async (root) => {
-  const [runs, est] = await Promise.all([api("/api/runs"), api("/api/estimate")]);
+  const [runs, est, spend] = await Promise.all([
+    api("/api/runs"), api("/api/estimate"), api("/api/spend"),
+  ]);
   state.runs = runs;
 
   root.appendChild(el("div", { class: "grid cols-3" },
@@ -530,6 +532,39 @@ VIEWS.runs = async (root) => {
         }),
         el("button", { class: "action", type: "submit" }, "Unlock"),
         el("span", { class: "unlock-status hint", style: "margin:0" }))));
+  }
+
+  if (spend.length) {
+    const totalCost = spend.reduce((t, r) => t + r.costUsd, 0);
+    root.appendChild(el("div", { style: "margin-top:16px" },
+      card("What the last sweep actually cost",
+        "Measured from the recorded token usage, not the estimate above. This is the " +
+        "basis for deciding which model or grounding mode is worth its cost.",
+        el("div", { class: "grid cols-2" },
+          barChart(spend.map((r) => ({
+            label: `${r.model.replace("claude-", "")} · ${r.mode}`,
+            value: r.costUsd,
+            color: r.mode === "grounded" ? "#435AEE" : "#64748B",
+            tip: `$${num(r.costUsd, 2)} over ${r.billedCalls} billed calls · ` +
+                 `${r.avgInputTokens} in / ${r.avgOutputTokens} out per call`,
+          })), { format: (v) => `$${num(v, 2)}` }),
+          table(
+            ["Model", "Mode", { label: "Answers", num: true }, { label: "Billed calls", num: true },
+             { label: "Avg in", num: true }, { label: "Avg out", num: true },
+             { label: "Cost", num: true }, { label: "Share", num: true }],
+            spend.map((r) =>
+              el("tr", {},
+                el("td", { class: "mono" }, r.model.replace("claude-", "")),
+                el("td", { html: `<span class="pill ${r.mode}">${r.mode}</span>` }),
+                el("td", { class: "num" }, r.answers),
+                el("td", { class: "num" }, r.billedCalls),
+                el("td", { class: "num" }, r.avgInputTokens.toLocaleString()),
+                el("td", { class: "num" }, r.avgOutputTokens.toLocaleString()),
+                el("td", { class: "num" }, `$${num(r.costUsd, 2)}`),
+                el("td", { class: "num" }, pct(r.share, 0)))))),
+        el("p", { class: "hint", style: "margin-top:12px" },
+          `Total $${num(totalCost, 2)}. The Message Batches API bills the same requests at ` +
+          `half price, so this sweep would be $${num(totalCost / 2, 2)} submitted as a batch.`))));
   }
 
   root.appendChild(el("div", { style: "margin-top:16px" },
