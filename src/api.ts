@@ -37,6 +37,7 @@ app.get("/api/runs", async (c) => {
   const { results } = await c.env.DB.prepare(
     `SELECT r.id, r.label, r.status, r.trigger, r.started_at AS startedAt,
             r.finished_at AS finishedAt, r.models, r.modes, r.note,
+            r.engine, r.batch_progress AS batchProgress,
             (SELECT COUNT(*) FROM tasks t WHERE t.run_id = r.id) AS tasks,
             (SELECT COUNT(*) FROM tasks t WHERE t.run_id = r.id AND t.status = 'done') AS tasksDone,
             (SELECT COALESCE(SUM(cost_usd),0) FROM results x WHERE x.run_id = r.id) AS costUsd
@@ -200,8 +201,18 @@ app.get("/api/spend", async (c) => {
 
 app.post("/api/admin/run", async (c) => {
   if (!isAdmin(c.req.raw, c.env)) return c.json({ error: "admin token required" }, 403);
-  const open = await c.env.DB.prepare("SELECT id FROM runs WHERE status = 'running' LIMIT 1").first();
-  if (open) return c.json({ error: "a run is already in progress" }, 409);
+  // 'processing' and 'judging' are the batch engine's in-flight states. Checking
+  // only for 'running' would let a second sweep start alongside a batch and bill
+  // the whole prompt set twice.
+  const open = await c.env.DB.prepare(
+    "SELECT id, status FROM runs WHERE status IN ('running','processing','judging') LIMIT 1",
+  ).first<{ id: number; status: string }>();
+  if (open) {
+    return c.json(
+      { error: `sweep ${open.id} is already in progress (${open.status}). Stop it first if it is stuck.` },
+      409,
+    );
+  }
   const { runId, taskCount } = await startRun(c.env, "manual", `started by ${c.get("email")}`);
   const batchSize = Math.max(1, parseInt(c.env.DRAIN_BATCH_SIZE, 10) || 12);
   return c.json({

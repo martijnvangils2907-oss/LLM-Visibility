@@ -40,7 +40,8 @@ CREATE TABLE IF NOT EXISTS runs (
   -- 'sync' answers one call at a time.
   engine         TEXT NOT NULL DEFAULT 'sync',
   batch_id       TEXT,
-  judge_batch_id TEXT
+  judge_batch_id TEXT,
+  batch_progress TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_runs_status ON runs(status);
 

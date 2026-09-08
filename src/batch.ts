@@ -182,7 +182,31 @@ export async function submitBatch(
   return batch.id;
 }
 
-export async function batchEnded(client: Anthropic, batchId: string): Promise<boolean> {
+export interface BatchProgress {
+  ended: boolean;
+  status: string;
+  processing: number;
+  succeeded: number;
+  errored: number;
+  canceled: number;
+  expired: number;
+}
+
+/**
+ * Anthropic reports per-request counts while a batch runs. Without them the
+ * dashboard has nothing to show between submitting and ingesting, which can be
+ * an hour of a progress bar reading zero.
+ */
+export async function batchProgress(client: Anthropic, batchId: string): Promise<BatchProgress> {
   const batch = await client.messages.batches.retrieve(batchId);
-  return batch.processing_status === "ended";
+  const c = batch.request_counts;
+  return {
+    ended: batch.processing_status === "ended",
+    status: batch.processing_status,
+    processing: c?.processing ?? 0,
+    succeeded: c?.succeeded ?? 0,
+    errored: c?.errored ?? 0,
+    canceled: c?.canceled ?? 0,
+    expired: c?.expired ?? 0,
+  };
 }

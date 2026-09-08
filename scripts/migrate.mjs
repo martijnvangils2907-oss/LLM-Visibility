@@ -30,6 +30,7 @@ const REQUIRED = {
     ["engine", "TEXT NOT NULL DEFAULT 'sync'"],
     ["batch_id", "TEXT"],
     ["judge_batch_id", "TEXT"],
+    ["batch_progress", "TEXT"],
   ],
 };
 

@@ -1,6 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import {
-  BATCH_DISCOUNT, batchEnded, buildAnswerRequests, buildJudgeRequests,
+  BATCH_DISCOUNT, batchProgress, buildAnswerRequests, buildJudgeRequests,
   parseAnswerMessage, parseCustomId, parseStanceMessage, submitBatch,
   type AnswerJob,
 } from "./batch.ts";
@@ -95,7 +95,17 @@ async function submitAnswers(env: Env, client: Anthropic, runId: number): Promis
 async function ingestAnswers(
   env: Env, client: Anthropic, runId: number, batchId: string,
 ): Promise<string> {
-  if (!(await batchEnded(client, batchId))) return `run ${runId}: batch ${batchId} still processing`;
+  const progress = await batchProgress(client, batchId);
+  await env.DB.prepare("UPDATE runs SET batch_progress = ? WHERE id = ?")
+    .bind(JSON.stringify(progress), runId).run();
+
+  if (progress.expired > 0 && progress.ended === false) {
+    await abortRun(env, runId, "batch expired before completing");
+    return `run ${runId}: batch expired`;
+  }
+  if (!progress.ended) {
+    return `run ${runId}: batch ${batchId} ${progress.succeeded} done, ${progress.processing} in flight`;
+  }
 
   const brands = await loadBrands(env.DB);
   const selfBrand = brands.find((b) => b.isSelf);
@@ -210,8 +220,11 @@ async function submitJudges(env: Env, client: Anthropic, runId: number): Promise
 async function ingestStances(
   env: Env, client: Anthropic, runId: number, judgeBatchId: string,
 ): Promise<string> {
-  if (!(await batchEnded(client, judgeBatchId))) {
-    return `run ${runId}: judge batch still processing`;
+  const progress = await batchProgress(client, judgeBatchId);
+  await env.DB.prepare("UPDATE runs SET batch_progress = ? WHERE id = ?")
+    .bind(JSON.stringify({ ...progress, phase: "judging" }), runId).run();
+  if (!progress.ended) {
+    return `run ${runId}: judge batch ${progress.succeeded} done, ${progress.processing} in flight`;
   }
 
   let judged = 0;

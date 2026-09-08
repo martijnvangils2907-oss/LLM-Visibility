@@ -25,7 +25,9 @@ export default {
 
   async scheduled(event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
     if (event.cron === env.SWEEP_CRON) {
-      const open = await env.DB.prepare("SELECT id FROM runs WHERE status = 'running' LIMIT 1").first();
+      const open = await env.DB.prepare(
+        "SELECT id FROM runs WHERE status IN ('running','processing','judging') LIMIT 1",
+      ).first();
       if (open) {
         console.log("sweep skipped: previous run still in progress");
         return;

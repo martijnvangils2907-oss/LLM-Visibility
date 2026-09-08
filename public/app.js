@@ -470,7 +470,8 @@ VIEWS.runs = async (root) => {
       `Budget cap $${num(est.budgetUsd, 0)}. ${est.note}`),
   ));
 
-  const running = runs.find((r) => r.status === "running");
+  const IN_FLIGHT = ["running", "processing", "judging"];
+  const running = runs.find((r) => IN_FLIGHT.includes(r.status));
 
   if (state.me?.admin) {
     root.appendChild(el("div", { class: "card", style: "margin-top:16px" },
@@ -584,7 +585,7 @@ VIEWS.runs = async (root) => {
 
   root.appendChild(el("div", { style: "margin-top:16px" },
     card("Sweep history", null,
-      table(["Run", "Status", "Trigger", "Progress", { label: "Cost", num: true }, "Started", "Models"],
+      table(["Run", "Status", "Trigger", "Progress", { label: "Cost", num: true }, "Started", "Models", ""],
         runs.map((r) => {
           const frac = r.tasks ? r.tasksDone / r.tasks : 0;
           return el("tr", {},
@@ -592,9 +593,26 @@ VIEWS.runs = async (root) => {
             el("td", { html: `<span class="pill ${r.status === "complete" ? "recommended" : r.status === "running" ? "grounded" : "qualified"}">${esc(r.status)}</span>` }),
             el("td", {}, r.trigger),
             el("td", { html: (() => {
+              // A batch run's tasks only flip to done at ingest, so the task
+              // count reads zero for the whole batch. Anthropic's own per
+              // request counts are what is actually moving.
+              let bp = null;
+              try { bp = r.batchProgress ? JSON.parse(r.batchProgress) : null; } catch { /* ignore */ }
+              if (r.engine === "batch" && bp && r.status !== "complete") {
+                const total = bp.succeeded + bp.processing + bp.errored;
+                const pc = total ? (bp.succeeded / total) * 100 : 0;
+                const phase = bp.phase === "judging" ? "judging" : "answering";
+                return `<div class="progress"><div style="width:${pc.toFixed(0)}%"></div></div>` +
+                  `<span style="font-size:11px;color:#64748B">${phase}: ${bp.succeeded} answered, ` +
+                  `${bp.processing} in flight${bp.errored ? `, ${bp.errored} failed` : ""}</span>`;
+              }
+              if (r.engine === "batch" && r.status === "processing" && !bp) {
+                return `<div class="progress"><div style="width:0%"></div></div>` +
+                  `<span style="font-size:11px;color:#64748B">submitted, waiting for Anthropic</span>`;
+              }
               const left = Math.max(0, r.tasks - r.tasksDone);
               const mins = Math.ceil(left / (est.drainBatchSize || 12));
-              const eta = r.status === "running" && left
+              const eta = r.status === "running" && left && r.engine !== "batch"
                 ? ` &middot; ~${mins >= 60 ? `${Math.floor(mins / 60)}h ${mins % 60}m` : `${mins} min`} left`
                 : "";
               return `<div class="progress"><div style="width:${(frac * 100).toFixed(0)}%"></div></div>` +
@@ -602,7 +620,28 @@ VIEWS.runs = async (root) => {
             })() }),
             el("td", { class: "num" }, `$${num(r.costUsd, 2)}`),
             el("td", {}, new Date(r.startedAt).toLocaleString()),
-            el("td", { class: "mono" }, JSON.parse(r.models).map((m) => m.replace("claude-", "")).join(", ")));
+            el("td", { class: "mono" }, JSON.parse(r.models).map((m) => m.replace("claude-", "")).join(", ")),
+            el("td", {},
+              state.me?.admin && !["complete", "aborted"].includes(r.status)
+                ? el("button", {
+                    class: "action ghost",
+                    onclick: async (e) => {
+                      if (!confirm(
+                        `Stop sweep ${r.label}?\n\nAnswers already collected are kept. ` +
+                        `Nothing further is billed. This frees you to start a new sweep.`,
+                      )) return;
+                      e.target.disabled = true;
+                      try {
+                        await api(`/api/admin/abort?run=${r.id}`, {
+                          method: "POST", headers: { "X-Admin-Token": state.adminToken },
+                        });
+                        switchView("runs");
+                      } catch (err) { alert(err.message); e.target.disabled = false; }
+                    },
+                  }, "Stop")
+                : r.note
+                  ? el("span", { class: "hint", style: "margin:0" }, r.note)
+                  : null));
         })))));
 };
 
