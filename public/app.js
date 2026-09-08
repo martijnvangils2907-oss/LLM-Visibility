@@ -602,9 +602,18 @@ VIEWS.runs = async (root) => {
                 const total = bp.succeeded + bp.processing + bp.errored;
                 const pc = total ? (bp.succeeded / total) * 100 : 0;
                 const phase = bp.phase === "judging" ? "judging" : "answering";
+                // Anthropic's succeeded counter often sits near zero until a
+                // batch is nearly done, so elapsed time is what tells you it is
+                // alive. Without it, a healthy batch reads as a hang.
+                const mins = Math.round((Date.now() - Date.parse(r.startedAt)) / 60000);
+                const elapsed = mins >= 60 ? `${Math.floor(mins / 60)}h ${mins % 60}m` : `${mins} min`;
+                const note = bp.succeeded === 0 && bp.processing > 0
+                  ? " &middot; results usually all arrive at once near the end"
+                  : "";
                 return `<div class="progress"><div style="width:${pc.toFixed(0)}%"></div></div>` +
                   `<span style="font-size:11px;color:#64748B">${phase}: ${bp.succeeded} answered, ` +
-                  `${bp.processing} in flight${bp.errored ? `, ${bp.errored} failed` : ""}</span>`;
+                  `${bp.processing} in flight${bp.errored ? `, ${bp.errored} failed` : ""} &middot; ` +
+                  `running ${elapsed}${note}</span>`;
               }
               if (r.engine === "batch" && r.status === "processing" && !bp) {
                 return `<div class="progress"><div style="width:0%"></div></div>` +
