@@ -9,9 +9,18 @@ name: Deploy
 #   ANTHROPIC_API_KEY      the key the sweeps bill against
 #   ADMIN_TOKEN            gates starting and aborting sweeps
 #
-# Optional repository variables (Settings -> Variables), to avoid committing them:
-#   ACCESS_TEAM_DOMAIN     e.g. yourteam.cloudflareaccess.com
-#   ACCESS_AUD             the Access application's AUD tag
+# Everything else has a working default and only needs a repository variable
+# (Settings -> Variables) if you want to change it:
+#   APP_HOSTNAME           default llmvisibilityicron.uk
+#   ACCESS_TEAM_NAME       default icron -- becomes <name>.cloudflareaccess.com
+#                          and CANNOT be renamed afterwards
+#   ACCESS_EMAIL_DOMAIN    default icrontech.com -- who may open the dashboard
+#   ACCESS_EMAILS          extra individual addresses, comma separated
+#
+# The workflow creates the Zero Trust organisation, the Access application and
+# its allow policy, reads the application's AUD tag back, and bakes it into the
+# Worker before deploying. The custom domain is attached by the deploy itself.
+# No value is ever copied between dashboards by hand.
 
 on:
   workflow_dispatch:
@@ -43,7 +52,7 @@ jobs:
       - run: npm ci
       - name: Typecheck
         run: npm run typecheck
-      - name: Brand detection tests
+      - name: Tests
         run: npm test
       - name: Prompt seed is in sync with data/prompts.csv
         run: |
@@ -63,6 +72,10 @@ jobs:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       DB_NAME: icron-visibility
+      APP_HOSTNAME: ${{ vars.APP_HOSTNAME || 'llmvisibilityicron.uk' }}
+      ACCESS_TEAM_NAME: ${{ vars.ACCESS_TEAM_NAME || 'icron' }}
+      ACCESS_EMAIL_DOMAIN: ${{ vars.ACCESS_EMAIL_DOMAIN || 'icrontech.com' }}
+      ACCESS_EMAILS: ${{ vars.ACCESS_EMAILS }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -93,30 +106,27 @@ jobs:
           echo "Using D1 database $id"
           echo "D1_ID=$id" >> "$GITHUB_ENV"
 
+      - name: Ensure Zero Trust, the Access application and its policy
+        run: node scripts/cf-setup.mjs
+
       - name: Write the resolved values into wrangler.toml
         run: |
           set -euo pipefail
-          # The database id is account-specific, so it is injected here rather
-          # than committed to the repository.
+          # The database id and the Access identifiers are account-specific, so
+          # they are injected here rather than committed to the repository.
           sed -i "s/REPLACE_WITH_YOUR_D1_DATABASE_ID/${D1_ID}/" wrangler.toml
+          sed -i "s|^ACCESS_TEAM_DOMAIN = .*|ACCESS_TEAM_DOMAIN = \"${RESOLVED_TEAM_DOMAIN}\"|" wrangler.toml
+          sed -i "s|^ACCESS_AUD = .*|ACCESS_AUD = \"${RESOLVED_AUD}\"|" wrangler.toml
 
-          # Access settings come from repository variables when they are set,
-          # otherwise whatever is already in wrangler.toml stands.
-          if [ -n "${ACCESS_TEAM_DOMAIN}" ]; then
-            sed -i "s|^ACCESS_TEAM_DOMAIN = .*|ACCESS_TEAM_DOMAIN = \"${ACCESS_TEAM_DOMAIN}\"|" wrangler.toml
-          fi
-          if [ -n "${ACCESS_AUD}" ]; then
-            sed -i "s|^ACCESS_AUD = .*|ACCESS_AUD = \"${ACCESS_AUD}\"|" wrangler.toml
-          fi
+          # Attaching the custom domain here means `wrangler deploy` creates the
+          # DNS record and the route, so there is nothing to click afterwards.
+          printf '\n[[routes]]\npattern = "%s"\ncustom_domain = true\n' "$APP_HOSTNAME" >> wrangler.toml
 
-          if grep -q 'ACCESS_TEAM_DOMAIN = ""' wrangler.toml; then
-            echo "::warning::ACCESS_TEAM_DOMAIN is empty, so the Worker will not verify"
-            echo "::warning::Access tokens itself. Set it before sharing the URL. See DEPLOY.md step 6."
+          if grep -q 'ACCESS_TEAM_DOMAIN = ""' wrangler.toml || grep -q 'ACCESS_AUD = ""' wrangler.toml; then
+            echo "::error::Access is not configured, so the Worker would trust any request."
+            exit 1
           fi
-          grep -E 'database_id|ACCESS_' wrangler.toml
-        env:
-          ACCESS_TEAM_DOMAIN: ${{ vars.ACCESS_TEAM_DOMAIN }}
-          ACCESS_AUD: ${{ vars.ACCESS_AUD }}
+          grep -E 'database_id|ACCESS_|pattern|custom_domain' wrangler.toml
 
       - name: Apply schema and prompt seed
         if: github.event_name == 'push' || inputs.apply_migrations
@@ -151,14 +161,20 @@ jobs:
           {
             echo "### Deployed"
             echo ""
-            echo "- D1 database: \`${D1_ID}\`"
-            echo "- Prompts loaded: run the query below to confirm"
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Dashboard | https://${APP_HOSTNAME} |"
+            echo "| Sign-in | ${RESOLVED_TEAM_DOMAIN} |"
+            echo "| D1 database | \`${D1_ID}\` |"
+            echo ""
+            echo "**Verify before sharing the link.** From any terminal:"
             echo ""
             echo '```'
-            echo "npx wrangler d1 execute icron-visibility --remote \\"
-            echo "  --command \"SELECT COUNT(*) FROM prompts WHERE active=1\""
+            echo "curl -s -o /dev/null -w '%{http_code}\\n' https://${APP_HOSTNAME}/api/overview"
             echo '```'
             echo ""
-            echo "Next: attach a custom domain and put Cloudflare Access in front of it."
-            echo "There is no *.workers.dev URL by design. See DEPLOY.md steps 5 and 6."
+            echo "That must print 401 or 302. A 200 means the data is public."
+            echo ""
+            echo "Then open the dashboard with \`?token=<ADMIN_TOKEN>\`, go to Runs,"
+            echo "and press Start a sweep now."
           } >> "$GITHUB_STEP_SUMMARY"

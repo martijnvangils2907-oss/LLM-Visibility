@@ -1,79 +1,96 @@
 # Deploying to Cloudflare
 
-Two routes. Both end in the same place. **Option A is recommended**: credentials
-live in GitHub's secret store rather than on someone's laptop, and every future
-change to the prompt set redeploys by pushing a commit.
+**Option A is strongly recommended.** It does the Cloudflare setup for you --
+database, Zero Trust organisation, Access application and policy, custom domain --
+and leaves you four steps that genuinely cannot be automated, because you have to
+be signed in to Cloudflare to do them at all. Credentials live in GitHub's secret
+store rather than on someone's laptop.
 
-Whichever you pick, steps 5 (custom domain) and 6 (Access) are dashboard work and
-have to be done once by hand.
+Option B is the manual equivalent, for when you would rather drive it yourself.
 
 ---
 
 ## Option A — deploy from GitHub Actions
 
+The workflow does everything that can be done over an API: it creates the D1
+database, the Zero Trust organisation, the Access application and its allow
+policy, reads the application's AUD tag back and bakes it into the Worker, then
+deploys and attaches the custom domain. No identifier is copied between
+dashboards by hand.
+
+Four steps are left for you, because none of them can be bootstrapped without
+already being signed in.
+
 ### 1. Create a Cloudflare API token
 
-Cloudflare dashboard → My Profile → API Tokens → **Create Token** → *Create Custom
-Token*. Give it exactly these permissions:
+Cloudflare dashboard → My Profile → API Tokens → **Create Token** → *Create
+Custom Token*. Name it `icron-llm-visibility-deploy` and add these permissions:
 
-| Type | Resource | Level |
-|---|---|---|
-| Account | Workers Scripts | Edit |
-| Account | D1 | Edit |
-| Account | Account Settings | Read |
+| Type | Resource | Level | Needed for |
+|---|---|---|---|
+| Account | Workers Scripts | Edit | deploying the Worker |
+| Account | D1 | Edit | creating the database, loading prompts |
+| Account | Account Settings | Read | resolving the account |
+| Account | Cloudflare Zero Trust | Edit | the Access application and policy |
+| Zone | Workers Routes | Edit | attaching the custom domain |
+| Zone | Zone | Read | finding the zone for that domain |
 
-Scope it to your account under *Account Resources*. Nothing zone-level is needed —
-the custom domain is attached by hand in step 5.
+Under *Account Resources* pick your account; under *Zone Resources* pick the
+zone for your dashboard hostname. **The token is shown once** — copy it.
 
-Also copy your **Account ID** from Workers & Pages → Overview (right-hand column).
+### 2. Copy your Account ID
 
-### 2. Add the repository secrets
+Workers & Pages → Overview → right-hand column.
 
-GitHub → the repo → Settings → Secrets and variables → Actions → **Secrets**:
+### 3. Add four repository secrets
+
+GitHub → Settings → Secrets and variables → Actions → **Secrets**:
 
 | Secret | Value |
 |---|---|
-| `CLOUDFLARE_API_TOKEN` | the token from step 1 |
-| `CLOUDFLARE_ACCOUNT_ID` | your Cloudflare account ID |
-| `ANTHROPIC_API_KEY` | the Anthropic key the sweeps bill against |
-| `ADMIN_TOKEN` | any long random string, e.g. `openssl rand -hex 24` |
+| `CLOUDFLARE_API_TOKEN` | from step 1 |
+| `CLOUDFLARE_ACCOUNT_ID` | from step 2 |
+| `ANTHROPIC_API_KEY` | the key the sweeps bill against |
+| `ADMIN_TOKEN` | `openssl rand -hex 24` — keep it, you need it to start a sweep |
 
-`ADMIN_TOKEN` gates starting and aborting sweeps. To use the "Start a sweep now"
-button, open the dashboard once with `?token=<that value>`.
+### 4. Run the workflow
 
-### 3. Run the workflow
+Actions → **Deploy** → Run workflow.
 
-Actions → **Deploy** → Run workflow, on this branch. It will:
+`workflow_dispatch` is only offered for workflows on the repository's default
+branch, which here is the `claude/...` branch, because the repository was created
+empty and GitHub made the first pushed branch the default.
 
-- create the D1 database if it does not exist, and resolve its id from the API, so
-  no account-specific id is ever committed;
-- verify the build (typecheck, brand-detection tests, and a check that the seed SQL
-  matches `data/prompts.csv`);
-- apply the schema and load the 300 prompts;
-- push the Worker secrets;
-- deploy.
+### Defaults, and how to change them
 
-Both SQL files are idempotent. The schema is `CREATE ... IF NOT EXISTS`, and the
-seed upserts rather than replaces, so re-running it updates prompt text in place
-and never touches collected results. Prompts you delete from the CSV are marked
-inactive rather than removed, which keeps their history readable.
+Nothing below needs setting unless you want something different. Override any of
+them with a repository *variable* (Settings → Secrets and variables → Actions →
+**Variables**):
 
-The workflow uses a `production` GitHub environment. If you want a human approval
-gate before anything reaches Cloudflare, add required reviewers to it under
-Settings → Environments.
+| Variable | Default | Notes |
+|---|---|---|
+| `APP_HOSTNAME` | `llmvisibilityicron.uk` | the zone must be on this Cloudflare account |
+| `ACCESS_TEAM_NAME` | `icron` | becomes `icron.cloudflareaccess.com`. **Permanent** — Cloudflare does not allow renaming it |
+| `ACCESS_EMAIL_DOMAIN` | `icrontech.com` | everyone at this domain may open the dashboard |
+| `ACCESS_EMAILS` | *(empty)* | extra individual addresses, comma separated |
 
-### 4. Later changes
+The setup refuses to create an Access application with no allow rule, rather than
+publishing an unguarded dashboard.
 
-Re-run the workflow from the Actions tab. The `push` trigger is set to `main`,
-which does not exist yet: this repository was created empty, so GitHub made the
-`claude/...` branch the default. That is what makes the Run workflow button
-appear at all, since `workflow_dispatch` is only offered for workflows on the
-default branch.
+### If the Zero Trust step fails
 
-Once you are happy with it, Settings -> Branches -> rename the default branch to
-`main`. Pushes then redeploy automatically.
+Zero Trust has to be subscribed once before its API will answer, and that first
+click is dashboard-only. If the workflow stops with *"Zero Trust not subscribed"*,
+open Cloudflare → **Zero Trust** in the sidebar, choose the **Free** plan (it asks
+for a card and does not charge it), then re-run the workflow. Everything else is
+automated either way.
 
----
+These Cloudflare calls could not be rehearsed against a live account from the
+machine that wrote them, so each one reports the API's own error code and a
+suggested fix rather than failing silently. `npm test` covers the control flow
+against a mock.
+
+### Later changes
 
 ## Option B — deploy from your own machine
 
@@ -95,53 +112,58 @@ npx wrangler secret put ADMIN_TOKEN
 npm run deploy
 ```
 
-Do not commit the database id if you also use Option A — the workflow injects it,
-and a committed value would be overwritten anyway.
+This deploys the Worker but does **not** set up Access, so the dashboard would be
+unreachable (there is no `workers.dev` URL) and, once you attach a domain,
+unguarded. Run the Cloudflare setup too:
+
+```bash
+CLOUDFLARE_API_TOKEN=... CLOUDFLARE_ACCOUNT_ID=... \
+APP_HOSTNAME=llmvisibilityicron.uk ACCESS_TEAM_NAME=icron \
+ACCESS_EMAIL_DOMAIN=icrontech.com \
+  node scripts/cf-setup.mjs
+```
+
+It prints the team domain and AUD tag. Put both into `[vars]` in `wrangler.toml`,
+add a `[[routes]]` block with `pattern = "llmvisibilityicron.uk"` and
+`custom_domain = true`, and deploy again.
+
+Do not commit the database id, the AUD tag or the routes block if you also use
+Option A — the workflow injects all of them, and committed values are overwritten.
 
 ---
 
-## 5. Attach a custom domain
+## 5. Verify before sharing the link
+
+The workflow prints the dashboard URL and the sign-in domain in its summary.
 
 `workers_dev = false` is set deliberately, so there is **no `*.workers.dev` URL**
-that would sidestep Access. Until you attach a route, the Worker is unreachable.
+that would sidestep Access.
 
-Cloudflare dashboard → Workers & Pages → `icron-llm-visibility` → Settings →
-Domains & Routes → Add → **Custom domain**. Use something like
-`llm-visibility.icrontech.com`. Cloudflare creates the DNS record for you.
+Open the hostname in a private window: you should be redirected to a Cloudflare
+Access login, and land on the dashboard after signing in.
 
-## 6. Put Cloudflare Access in front of it
+Then the check that actually matters:
 
-Zero Trust → Access → Applications → Add an application → **Self-hosted**.
+```bash
+curl -s -o /dev/null -w "%{http_code}\n" https://llmvisibilityicron.uk/api/overview
+```
 
-- **Application domain**: the hostname from step 5.
-- **Session duration**: 24 hours is a sensible default.
-- **Policy**: Allow → Include → *Emails ending in* `@icrontech.com`, or a specific
-  list of addresses. Add a second Include rule for any external colleague.
-- Under **Overview**, copy the **Application Audience (AUD) Tag**.
+**This must print `401` or `302`.** A `200` means the data is public — say so and
+stop. With `ACCESS_TEAM_DOMAIN` and `ACCESS_AUD` baked in, a request carrying no
+valid Access JWT is rejected by the Worker itself, not only at the edge, so a
+route misconfiguration cannot quietly expose it. The deploy fails outright if
+either value is empty.
 
-Then bind it so the Worker verifies the token itself, not just the edge. Either
-add two GitHub repository *variables* (Settings → Secrets and variables → Actions
-→ **Variables**) and re-run the workflow:
+To change who has access later: Zero Trust → Access → Applications → *ICRON LLM
+Visibility* → Policies. Or change `ACCESS_EMAIL_DOMAIN` / `ACCESS_EMAILS` and
+re-run the workflow, which rewrites the policy in place.
 
-| Variable | Value |
-|---|---|
-| `ACCESS_TEAM_DOMAIN` | `yourteam.cloudflareaccess.com` (no scheme) |
-| `ACCESS_AUD` | the AUD tag you copied |
-
-…or, on Option B, edit `[vars]` in `wrangler.toml` and redeploy.
-
-**Verify this before sharing the link.** Open the URL in a private window: you
-should be bounced to the Access login. With those two values set, a request
-carrying no valid Access JWT gets a 401 from the Worker itself. With them empty,
-the Worker trusts whatever reaches it — the deploy logs a warning when that is the
-case.
-
-## 7. Run the first sweep
+## 6. Run the first sweep
 
 Sweeps run automatically every Monday at 06:00 UTC. To start one now, open
 
 ```
-https://your-hostname/?token=<ADMIN_TOKEN>
+https://llmvisibilityicron.uk/?token=<ADMIN_TOKEN>
 ```
 
 go to **Runs**, and press **Start a sweep now**. It enqueues ~780 Claude calls and
