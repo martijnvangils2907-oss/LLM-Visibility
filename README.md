@@ -78,8 +78,14 @@ npm run seed:gen
 npx wrangler d1 execute icron-visibility --remote --file=./migrations/0002_seed_prompts.sql
 ```
 
-Prompt IDs are stable, so history survives as long as you do not renumber existing
-rows. Add new prompts with fresh IDs rather than reusing old ones.
+On GitHub Actions, committing the regenerated seed is enough; the Deploy workflow
+applies it and fails the build if the SQL and the CSV have drifted apart.
+
+The seed upserts, so re-applying it updates prompt text in place and leaves
+collected results untouched. Prompts removed from the CSV are marked inactive
+rather than deleted, which keeps their history readable and keeps them out of
+future sweeps. Prompt IDs are the join key, so add new prompts with fresh IDs and
+do not renumber existing rows.
 
 ## Changing the tracked vendors
 

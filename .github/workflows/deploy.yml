@@ -1,0 +1,164 @@
+name: Deploy
+
+# Deploys the Worker to Cloudflare. Credentials live in GitHub secrets, so
+# nothing account-specific is ever committed to the repository.
+#
+# Required repository secrets:
+#   CLOUDFLARE_API_TOKEN   scoped token, see DEPLOY.md for the exact permissions
+#   CLOUDFLARE_ACCOUNT_ID  Cloudflare dashboard -> Workers & Pages -> Account ID
+#   ANTHROPIC_API_KEY      the key the sweeps bill against
+#   ADMIN_TOKEN            gates starting and aborting sweeps
+#
+# Optional repository variables (Settings -> Variables), to avoid committing them:
+#   ACCESS_TEAM_DOMAIN     e.g. yourteam.cloudflareaccess.com
+#   ACCESS_AUD             the Access application's AUD tag
+
+on:
+  workflow_dispatch:
+    inputs:
+      apply_migrations:
+        description: "Apply schema and prompt seed before deploying"
+        type: boolean
+        default: true
+      sync_secrets:
+        description: "Push ANTHROPIC_API_KEY and ADMIN_TOKEN to the Worker"
+        type: boolean
+        default: true
+  push:
+    branches: [main]
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Brand detection tests
+        run: npm test
+      - name: Prompt seed is in sync with data/prompts.csv
+        run: |
+          npm run seed:gen
+          if ! git diff --quiet migrations/0002_seed_prompts.sql; then
+            echo "::error::migrations/0002_seed_prompts.sql is stale."
+            echo "Run 'npm run seed:gen' and commit the result."
+            git diff --stat migrations/0002_seed_prompts.sql
+            exit 1
+          fi
+
+  deploy:
+    needs: verify
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      DB_NAME: icron-visibility
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+
+      - name: Resolve the D1 database, creating it on first run
+        run: |
+          set -euo pipefail
+          API="https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/d1/database"
+          AUTH="Authorization: Bearer ${CLOUDFLARE_API_TOKEN}"
+
+          id=$(curl -sf -H "$AUTH" "${API}?name=${DB_NAME}" \
+               | jq -r --arg n "$DB_NAME" '.result[]? | select(.name==$n) | .uuid' | head -1)
+
+          if [ -z "$id" ]; then
+            echo "No database named ${DB_NAME}; creating it."
+            id=$(curl -sf -X POST -H "$AUTH" -H "Content-Type: application/json" \
+                 --data "{\"name\":\"${DB_NAME}\"}" "$API" | jq -r '.result.uuid')
+          fi
+
+          if [ -z "$id" ] || [ "$id" = "null" ]; then
+            echo "::error::Could not resolve a D1 database id. Check the API token's D1 permission."
+            exit 1
+          fi
+          echo "Using D1 database $id"
+          echo "D1_ID=$id" >> "$GITHUB_ENV"
+
+      - name: Write the resolved values into wrangler.toml
+        run: |
+          set -euo pipefail
+          # The database id is account-specific, so it is injected here rather
+          # than committed to the repository.
+          sed -i "s/REPLACE_WITH_YOUR_D1_DATABASE_ID/${D1_ID}/" wrangler.toml
+
+          # Access settings come from repository variables when they are set,
+          # otherwise whatever is already in wrangler.toml stands.
+          if [ -n "${ACCESS_TEAM_DOMAIN}" ]; then
+            sed -i "s|^ACCESS_TEAM_DOMAIN = .*|ACCESS_TEAM_DOMAIN = \"${ACCESS_TEAM_DOMAIN}\"|" wrangler.toml
+          fi
+          if [ -n "${ACCESS_AUD}" ]; then
+            sed -i "s|^ACCESS_AUD = .*|ACCESS_AUD = \"${ACCESS_AUD}\"|" wrangler.toml
+          fi
+
+          if grep -q 'ACCESS_TEAM_DOMAIN = ""' wrangler.toml; then
+            echo "::warning::ACCESS_TEAM_DOMAIN is empty, so the Worker will not verify"
+            echo "::warning::Access tokens itself. Set it before sharing the URL. See DEPLOY.md step 6."
+          fi
+          grep -E 'database_id|ACCESS_' wrangler.toml
+        env:
+          ACCESS_TEAM_DOMAIN: ${{ vars.ACCESS_TEAM_DOMAIN }}
+          ACCESS_AUD: ${{ vars.ACCESS_AUD }}
+
+      - name: Apply schema and prompt seed
+        if: github.event_name == 'push' || inputs.apply_migrations
+        run: |
+          set -euo pipefail
+          # Both files are idempotent: the schema is CREATE ... IF NOT EXISTS and
+          # the seed upserts, so collected results are never touched.
+          npx wrangler d1 execute "$DB_NAME" --remote --yes --file=./migrations/0001_init.sql
+          npx wrangler d1 execute "$DB_NAME" --remote --yes --file=./migrations/0002_seed_prompts.sql
+
+      - name: Sync Worker secrets
+        if: github.event_name == 'push' || inputs.sync_secrets
+        run: |
+          set -euo pipefail
+          for name in ANTHROPIC_API_KEY ADMIN_TOKEN; do
+            value="${!name}"
+            if [ -z "$value" ]; then
+              echo "::error::Repository secret $name is not set."
+              exit 1
+            fi
+            printf '%s' "$value" | npx wrangler secret put "$name"
+          done
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ADMIN_TOKEN: ${{ secrets.ADMIN_TOKEN }}
+
+      - name: Deploy
+        run: npx wrangler deploy
+
+      - name: Summary
+        run: |
+          {
+            echo "### Deployed"
+            echo ""
+            echo "- D1 database: \`${D1_ID}\`"
+            echo "- Prompts loaded: run the query below to confirm"
+            echo ""
+            echo '```'
+            echo "npx wrangler d1 execute icron-visibility --remote \\"
+            echo "  --command \"SELECT COUNT(*) FROM prompts WHERE active=1\""
+            echo '```'
+            echo ""
+            echo "Next: attach a custom domain and put Cloudflare Access in front of it."
+            echo "There is no *.workers.dev URL by design. See DEPLOY.md steps 5 and 6."
+          } >> "$GITHUB_STEP_SUMMARY"
