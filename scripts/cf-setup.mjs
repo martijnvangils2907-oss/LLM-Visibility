@@ -103,6 +103,36 @@ async function ensureOrganisation() {
   return domain;
 }
 
+/* ----------------------------------------------------------- login method */
+
+/**
+ * An organisation created through the API has no identity provider, and Access
+ * with no login method is a locked door with no key: it refuses everyone,
+ * including the people the policy allows. The dashboard onboarding adds
+ * one-time PIN silently, which is why this is easy to miss.
+ */
+async function ensureLoginMethod() {
+  const existing = await cf("GET", `/accounts/${accountId}/access/identity_providers`);
+  if (!existing.ok) fail("Could not list Access identity providers.", explain(existing.json));
+
+  const providers = existing.json.result ?? [];
+  if (providers.length) {
+    console.log(`Login method already configured: ${providers.map((p) => p.name).join(", ")}`);
+    return;
+  }
+
+  // One-time PIN emails a code to the address in the policy. It needs no
+  // configuration and no external IdP, so it is the right default here.
+  console.log("No login method on this account. Adding one-time PIN.");
+  const created = await cf("POST", `/accounts/${accountId}/access/identity_providers`, {
+    name: "One-time PIN",
+    type: "onetimepin",
+    config: {},
+  });
+  if (!created.ok) fail("Could not add the one-time PIN login method.", explain(created.json));
+  console.log("Added one-time PIN.");
+}
+
 /* ------------------------------------------------------ Access application */
 
 async function ensureApplication() {
@@ -184,6 +214,7 @@ async function ensurePolicy(appId) {
 /* -------------------------------------------------------------------- main */
 
 const authDomain = await ensureOrganisation();
+await ensureLoginMethod();
 const app = await ensureApplication();
 await ensurePolicy(app.id);
 

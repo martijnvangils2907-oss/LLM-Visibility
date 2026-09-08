@@ -28,6 +28,12 @@ globalThis.fetch = async (url, opts = {}) => {
     }
     return reply({ success: true, result: { auth_domain: body.auth_domain } });
   }
+  if (path.endsWith("/access/identity_providers") && method === "GET") {
+    return reply({ success: true, result: state.idps ?? [] });
+  }
+  if (path.endsWith("/access/identity_providers") && method === "POST") {
+    return reply({ success: true, result: { id: "idp-new", name: body.name, type: body.type } });
+  }
   if (/\/access\/apps\?/.test(path) && method === "GET") return reply({ success: true, result: state.apps });
   if (path.endsWith("/access/apps") && method === "POST") {
     return reply({ success: true, result: { id: "app-generated", aud: "aud-generated" } });

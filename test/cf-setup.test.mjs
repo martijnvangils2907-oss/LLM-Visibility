@@ -51,6 +51,10 @@ console.log("Green field (nothing exists yet)");
 expect("exits 0", r.code === 0, r.out.slice(-500));
 expect("creates the Zero Trust org", r.calls.some((c) => c.method === "POST" && c.path.endsWith("/access/organizations")));
 expect("creates the Access app", r.calls.some((c) => c.method === "POST" && c.path.endsWith("/access/apps")));
+expect("adds a login method, or Access has no way to authenticate anyone",
+  r.calls.some((c) => c.method === "POST" && c.path.endsWith("/access/identity_providers")));
+expect("the login method is one-time PIN",
+  r.calls.some((c) => c.body?.type === "onetimepin"));
 expect("creates a policy", r.calls.some((c) => c.method === "POST" && /\/policies$/.test(c.path)));
 expect("policy allows the email domain",
   r.calls.some((c) => JSON.stringify(c.body ?? {}).includes('"domain":"icrontech.com"')));
@@ -61,6 +65,7 @@ expect("exports the team domain", r.envOut.includes("RESOLVED_TEAM_DOMAIN=icron.
 console.log("\nSecond run (everything already exists)");
 r = await run("idempotent", { state: {
   org: { auth_domain: "icron.cloudflareaccess.com" },
+  idps: [{ id: "idp1", name: "One-time PIN", type: "onetimepin" }],
   apps: [{ id: "app1", domain: "llmvisibilityicron.uk", aud: "aud-existing" }],
   policies: { app1: [{ id: "p1", name: "Allowed viewers", precedence: 1 }] },
 } });
@@ -69,7 +74,17 @@ expect("creates nothing new", !r.calls.some((c) => c.method === "POST"), JSON.st
 expect("updates the existing policy in place", r.calls.some((c) => c.method === "PUT" && /\/policies\/p1$/.test(c.path)));
 expect("reuses the existing AUD", r.envOut.includes("RESOLVED_AUD=aud-existing"), r.envOut);
 
-// 3. Refuse to build an app nobody can reach.
+// 3. An org that exists but has no login method must still get one: this is the
+//    state a Zero Trust organisation is left in when it is created over the API.
+console.log("\nOrganisation exists but has no login method");
+r = await run("no-idp", { state: {
+  org: { auth_domain: "icron.cloudflareaccess.com" }, idps: [], apps: [], policies: {},
+} });
+expect("exits 0", r.code === 0, r.out.slice(-400));
+expect("adds the missing login method",
+  r.calls.some((c) => c.method === "POST" && c.path.endsWith("/access/identity_providers")));
+
+// 4. Refuse to build an app nobody can reach.
 console.log("\nNo allow rule configured");
 r = await run("no-policy", {
   state: { org: { auth_domain: "icron.cloudflareaccess.com" }, apps: [], policies: {} },
